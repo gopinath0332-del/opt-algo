@@ -32,9 +32,13 @@ fi
 # Activate venv and upgrade pip
 "$PROJECT_DIR/venv/bin/pip" install --upgrade pip
 
-# 4. Copy project files (assuming run from the cloned repository directory)
-echo "Step 4: Copying application files..."
-cp -R api core strategy notifications config main.py requirements.txt "$PROJECT_DIR/"
+# 4. Copy project files if not already in target directory
+if [ "$(pwd)" != "$PROJECT_DIR" ]; then
+    echo "Step 4: Copying application files..."
+    cp -R api core strategy notifications config main.py requirements.txt "$PROJECT_DIR/"
+else
+    echo "Step 4: Already in target directory, skipping copy."
+fi
 
 # Setup default configuration files if they don't exist
 if [ ! -f "$PROJECT_DIR/config/.env" ]; then
