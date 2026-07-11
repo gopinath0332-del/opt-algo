@@ -74,6 +74,11 @@ For running in production on a Raspberry Pi or Linux VPS, we run the bot as a ba
 
 ### Manual Service Management
 
+* **Restart the service (helper script)**:
+  ```bash
+  chmod +x restart.sh
+  ./restart.sh
+  ```
 * **Start the bot service**:
   ```bash
   sudo systemctl start options-bot
@@ -86,7 +91,7 @@ For running in production on a Raspberry Pi or Linux VPS, we run the bot as a ba
   ```bash
   sudo systemctl stop options-bot
   ```
-* **Restart the service**:
+* **Restart the service manually**:
   ```bash
   sudo systemctl restart options-bot
   ```

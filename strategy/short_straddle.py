@@ -246,17 +246,27 @@ class ShortStraddleStrategy:
 
         self.is_position_open = True
 
-        # Re-fetch premiums after fills (execution prices)
-        try:
-            time.sleep(1)  # Brief delay for settlement
-            call_ticker = self.client.get_ticker(self.call_symbol)
-            put_ticker = self.client.get_ticker(self.put_symbol)
-            self.call_entry_premium = float(call_ticker.get("mark_price", self.call_entry_premium))
-            self.put_entry_premium = float(put_ticker.get("mark_price", self.put_entry_premium))
-            self.entry_premium = self.call_entry_premium + self.put_entry_premium
-            self.sl_threshold = self.entry_premium * self.sl_pct
-        except Exception:
-            pass
+        # Re-fetch actual execution fill prices from the filled orders
+        if self.mode != "paper":
+            try:
+                time.sleep(2)  # Wait for exchange to process and settle fills
+                if call_order and call_order.get("id"):
+                    call_order_details = self.client.get_order(call_order.get("id"))
+                    avg_fill = call_order_details.get("avg_fill_price")
+                    if avg_fill:
+                        self.call_entry_premium = float(avg_fill)
+                        logger.info(f"Actual Call entry fill price: ${self.call_entry_premium:.4f}")
+                if put_order and put_order.get("id"):
+                    put_order_details = self.client.get_order(put_order.get("id"))
+                    avg_fill = put_order_details.get("avg_fill_price")
+                    if avg_fill:
+                        self.put_entry_premium = float(avg_fill)
+                        logger.info(f"Actual Put entry fill price: ${self.put_entry_premium:.4f}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch actual entry fill prices from orders: {e}")
+
+        self.entry_premium = self.call_entry_premium + self.put_entry_premium
+        self.sl_threshold = self.entry_premium * self.sl_pct
 
         # Send Discord entry notification
         self.notifier.send_entry_alert(
@@ -418,14 +428,9 @@ class ShortStraddleStrategy:
             logger.info("No open positions to close")
             return
 
-        # Get exit premiums before closing
+        # Get exit premiums before closing (will be overridden with actual fills if executed)
         exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
         exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
-        exit_total = exit_call_premium + exit_put_premium
-
-        # Calculate P&L: for short, profit = entry - exit
-        pnl_points = self.entry_premium - exit_total
-        realized_pnl_usd = pnl_points * self.lot_size * self.contract_value
 
         call_exit_order_id = None
         put_exit_order_id = None
@@ -450,8 +455,32 @@ class ShortStraddleStrategy:
             except Exception as e:
                 logger.error(f"Failed to close Put position: {e}")
                 self.notifier.send_error("Put Exit Failed", str(e))
+
+            # Query actual exit fill prices
+            if self.mode != "paper":
+                try:
+                    logger.info("Waiting 2 seconds to fetch exit fill prices...")
+                    time.sleep(2)
+                    if call_exit_order_id:
+                        call_exit_details = self.client.get_order(call_exit_order_id)
+                        avg_fill = call_exit_details.get("avg_fill_price")
+                        if avg_fill:
+                            exit_call_premium = float(avg_fill)
+                            logger.info(f"Actual Call exit fill price: ${exit_call_premium:.4f}")
+                    if put_exit_order_id:
+                        put_exit_details = self.client.get_order(put_exit_order_id)
+                        avg_fill = put_exit_details.get("avg_fill_price")
+                        if avg_fill:
+                            exit_put_premium = float(avg_fill)
+                            logger.info(f"Actual Put exit fill price: ${exit_put_premium:.4f}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch actual exit fill prices: {e}")
         else:
             logger.warning("[DISABLED] Order placement disabled — simulating exit")
+
+        exit_total = exit_call_premium + exit_put_premium
+        pnl_points = self.entry_premium - exit_total
+        realized_pnl_usd = pnl_points * self.lot_size * self.contract_value
 
         self.is_position_open = False
 

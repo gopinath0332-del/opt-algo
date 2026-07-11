@@ -724,3 +724,16 @@ class DeltaRestClient:
         except Exception as e:
             logger.warning(f"Could not get mark price for product {product_id}: {e}")
             return 0.0
+
+    def get_order(self, order_id: int) -> Dict[str, Any]:
+        """Get order details by ID.
+
+        Args:
+            order_id: Order ID
+
+        Returns:
+            Order details dictionary
+        """
+        logger.debug("Fetching order", order_id=order_id)
+        response = self._make_auth_request("GET", f"/v2/orders/{order_id}")
+        return cast(Dict[str, Any], response.get('result', response))
