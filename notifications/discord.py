@@ -1,0 +1,234 @@
+"""Discord notification handler for Options trading alerts."""
+
+import time
+from typing import Any, Dict, Optional
+
+import requests
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class DiscordNotifier:
+    """Handles sending options trade notifications to Discord via Webhooks."""
+
+    def __init__(self, webhook_url: str):
+        """Initialize Discord notifier.
+
+        Args:
+            webhook_url: Discord Webhook URL
+        """
+        self.webhook_url = webhook_url
+
+    def _f(self, val: Optional[float], decimals: int = 4) -> str:
+        """Format currency to reasonable precision, removing trailing zeros."""
+        if val is None:
+            return "0"
+        return f"{val:,.{decimals}f}".rstrip('0').rstrip('.')
+
+    def _send_embed(self, title: str, description: str, color: int) -> None:
+        """Send a Discord embed message.
+
+        Args:
+            title: Embed title
+            description: Embed description (supports ANSI code blocks)
+            color: Embed sidebar color (integer)
+        """
+        if not self.webhook_url:
+            logger.warning("Discord webhook URL not configured")
+            return
+
+        try:
+            embed = {
+                "title": title,
+                "description": description,
+                "color": color,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            payload = {"embeds": [embed]}
+            response = requests.post(self.webhook_url, json=payload, timeout=5)
+            response.raise_for_status()
+            logger.debug("Discord notification sent")
+        except requests.RequestException as e:
+            logger.error("Discord connection failed", error=str(e))
+        except Exception as e:
+            logger.error("Failed to send Discord notification", error=str(e))
+
+    def send_entry_alert(
+        self,
+        underlying: str,
+        strategy_name: str,
+        spot_price: float,
+        atm_strike: float,
+        call_symbol: str,
+        put_symbol: str,
+        call_premium: float,
+        put_premium: float,
+        total_premium: float,
+        lot_size: int,
+        leverage: int,
+        sl_threshold: float,
+        mode: str = "live",
+    ) -> None:
+        """Send a straddle entry notification.
+
+        Args:
+            underlying: Underlying asset (e.g., 'BTC')
+            strategy_name: Strategy name
+            spot_price: Spot price at entry
+            atm_strike: ATM strike selected
+            call_symbol: Call option symbol
+            put_symbol: Put option symbol
+            call_premium: Premium for call leg
+            put_premium: Premium for put leg
+            total_premium: Total premium collected
+            lot_size: Contracts per leg
+            leverage: Leverage used
+            sl_threshold: Stop-loss threshold (dollar amount)
+            mode: 'live' or 'paper'
+        """
+        mode_color = "1;32" if mode == "live" else "1;36"
+
+        message = (
+            f"Strategy: \u001b[1;37m{strategy_name}\u001b[0m\n"
+            f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
+            f"Underlying: \u001b[1;37m{underlying}\u001b[0m\n"
+            f"\n"
+            f"Spot Price: \u001b[0;36m${self._f(spot_price, 2)}\u001b[0m\n"
+            f"ATM Strike: \u001b[0;36m${self._f(atm_strike, 2)}\u001b[0m\n"
+            f"\n"
+            f"\u001b[1;37mCALL LEG:\u001b[0m {call_symbol}\n"
+            f"  Premium: \u001b[0;33m${self._f(call_premium)}\u001b[0m\n"
+            f"\u001b[1;37mPUT LEG:\u001b[0m {put_symbol}\n"
+            f"  Premium: \u001b[0;33m${self._f(put_premium)}\u001b[0m\n"
+            f"\n"
+            f"Total Premium: \u001b[0;32m${self._f(total_premium)}\u001b[0m\n"
+            f"Lot Size: \u001b[0;36m{lot_size}\u001b[0m per leg\n"
+            f"Leverage: \u001b[0;35m{leverage}x\u001b[0m\n"
+            f"Combined SL: \u001b[0;31m${self._f(sl_threshold)}\u001b[0m (50% of premium)\n"
+            f"\n"
+            f"Time: {time.strftime('%H:%M:%S IST')}"
+        )
+
+        formatted = f"```ansi\n{message}\n```"
+        title = f"📊 SHORT STRADDLE ENTRY — {underlying} @ Strike {self._f(atm_strike, 0)}"
+        color = 5763719  # Green
+
+        self._send_embed(title, formatted, color)
+
+    def send_exit_alert(
+        self,
+        underlying: str,
+        exit_reason: str,
+        entry_premium: float,
+        exit_premium: float,
+        realized_pnl: float,
+        call_symbol: str,
+        put_symbol: str,
+        exit_call_premium: float,
+        exit_put_premium: float,
+        mode: str = "live",
+    ) -> None:
+        """Send a straddle exit notification.
+
+        Args:
+            underlying: Underlying asset
+            exit_reason: Why the position was closed
+            entry_premium: Total premium at entry
+            exit_premium: Total premium at exit (cost to close)
+            realized_pnl: Realized P&L
+            call_symbol: Call option symbol
+            put_symbol: Put option symbol
+            exit_call_premium: Call premium at exit
+            exit_put_premium: Put premium at exit
+            mode: 'live' or 'paper'
+        """
+        pnl_color = "0;32" if realized_pnl >= 0 else "0;31"
+        pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
+        mode_color = "1;32" if mode == "live" else "1;36"
+
+        message = (
+            f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
+            f"Reason: \u001b[1;37m{exit_reason}\u001b[0m\n"
+            f"\n"
+            f"\u001b[1;37mCALL:\u001b[0m {call_symbol}\n"
+            f"  Exit Premium: \u001b[0;33m${self._f(exit_call_premium)}\u001b[0m\n"
+            f"\u001b[1;37mPUT:\u001b[0m {put_symbol}\n"
+            f"  Exit Premium: \u001b[0;33m${self._f(exit_put_premium)}\u001b[0m\n"
+            f"\n"
+            f"Entry Premium: \u001b[0;36m${self._f(entry_premium)}\u001b[0m\n"
+            f"Exit Premium: \u001b[0;36m${self._f(exit_premium)}\u001b[0m\n"
+            f"Realized P&L: \u001b[{pnl_color}m${self._f(realized_pnl)}\u001b[0m\n"
+            f"\n"
+            f"Time: {time.strftime('%H:%M:%S IST')}"
+        )
+
+        formatted = f"```ansi\n{message}\n```"
+        title = f"{pnl_emoji} SHORT STRADDLE EXIT — {underlying} | {exit_reason}"
+        color = 5763719 if realized_pnl >= 0 else 15548997  # Green or Red
+
+        self._send_embed(title, formatted, color)
+
+    def send_sl_alert(
+        self,
+        underlying: str,
+        current_loss: float,
+        sl_threshold: float,
+        entry_premium: float,
+        loss_pct: float,
+        mode: str = "live",
+    ) -> None:
+        """Send a stop-loss hit notification.
+
+        Args:
+            underlying: Underlying asset
+            current_loss: Current MTM loss
+            sl_threshold: SL threshold that was hit
+            entry_premium: Premium collected at entry
+            loss_pct: Loss as % of premium
+            mode: 'live' or 'paper'
+        """
+        mode_color = "1;32" if mode == "live" else "1;36"
+
+        message = (
+            f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
+            f"\n"
+            f"\u001b[0;31m⚠️ COMBINED STOP-LOSS TRIGGERED\u001b[0m\n"
+            f"\n"
+            f"Current Loss: \u001b[0;31m${self._f(abs(current_loss))}\u001b[0m\n"
+            f"SL Threshold: \u001b[0;33m${self._f(sl_threshold)}\u001b[0m\n"
+            f"Entry Premium: \u001b[0;36m${self._f(entry_premium)}\u001b[0m\n"
+            f"Loss: \u001b[0;31m{loss_pct:.1f}%\u001b[0m of premium\n"
+            f"\n"
+            f"Action: \u001b[1;37mClosing all positions...\u001b[0m\n"
+            f"Time: {time.strftime('%H:%M:%S IST')}"
+        )
+
+        formatted = f"```ansi\n{message}\n```"
+        title = f"🛑 STOP-LOSS HIT — {underlying} Short Straddle"
+        color = 15548997  # Red
+
+        self._send_embed(title, formatted, color)
+
+    def send_status_message(self, title: str, message: str, color: int = 3447003) -> None:
+        """Send a general status message.
+
+        Args:
+            title: Message title
+            message: Message content (ANSI formatted)
+            color: Embed color
+        """
+        formatted = f"```ansi\n{message}\n```"
+        self._send_embed(title, formatted, color)
+
+    def send_error(self, title: str, error: str) -> None:
+        """Send an error alert.
+
+        Args:
+            title: Error title
+            error: Error details
+        """
+        message = f"\u001b[0;31mError:\u001b[0m {error}"
+        formatted = f"```ansi\n{message}\n```"
+        self._send_embed(f"⚠️ {title}", formatted, 15158332)
