@@ -70,6 +70,8 @@ class ShortStraddleStrategy:
         self.spot_price: float = 0.0
         self.is_position_open: bool = False
         self.max_mtm_loss: float = 0.0
+        self.contract_value: float = 0.001
+        self.entry_time_us: int = 0
 
     def run(self) -> None:
         """Execute the full strategy cycle: entry → monitor → exit."""
@@ -127,11 +129,13 @@ class ShortStraddleStrategy:
         self.put_product_id = int(self.put_product["id"])
         self.call_symbol = self.call_product.get("symbol", "UNKNOWN")
         self.put_symbol = self.put_product.get("symbol", "UNKNOWN")
+        self.contract_value = float(self.call_product.get("contract_value", 0.001))
 
         logger.info(
             f"ATM Strike: {self.atm_strike} | "
             f"Call: {self.call_symbol} (ID: {self.call_product_id}) | "
-            f"Put: {self.put_symbol} (ID: {self.put_product_id})"
+            f"Put: {self.put_symbol} (ID: {self.put_product_id}) | "
+            f"Contract Value: {self.contract_value}"
         )
 
         # Get entry premiums (mark prices before placing orders)
@@ -185,6 +189,9 @@ class ShortStraddleStrategy:
                 mode=self.mode,
             )
             return
+
+        # Record start time for transaction queries
+        self.entry_time_us = int(time.time() * 1_000_000)
 
         # Set leverage on both option products
         try:
@@ -288,6 +295,9 @@ class ShortStraddleStrategy:
             lot_size=self.lot_size,
             leverage=self.leverage,
             entry_time=datetime.now(IST).isoformat(),
+            entry_premium_points=self.entry_premium,
+            total_premium_collected_usd=self.entry_premium * self.lot_size * self.contract_value,
+            contract_value=self.contract_value,
         )
 
         logger.info("✅ Straddle entry complete")
@@ -414,7 +424,8 @@ class ShortStraddleStrategy:
         exit_total = exit_call_premium + exit_put_premium
 
         # Calculate P&L: for short, profit = entry - exit
-        realized_pnl = self.entry_premium - exit_total
+        pnl_points = self.entry_premium - exit_total
+        realized_pnl_usd = pnl_points * self.lot_size * self.contract_value
 
         call_exit_order_id = None
         put_exit_order_id = None
@@ -444,19 +455,57 @@ class ShortStraddleStrategy:
 
         self.is_position_open = False
 
+        # Query trading fees (commissions) from the exchange ledger
+        trading_fees = 0.0
+        if self.order_placement_enabled and self.mode != "paper":
+            try:
+                logger.info("Waiting 3 seconds for exchange ledger to update commission logs...")
+                time.sleep(3)
+                now_us = int(time.time() * 1_000_000)
+                # Query from entry minus 60s up to now
+                start_us = self.entry_time_us - (60 * 1_000_000)
+
+                call_txns = self.client.get_trading_fee_transactions(
+                    start_time_us=start_us,
+                    end_time_us=now_us,
+                    product_id=self.call_product_id
+                )
+                put_txns = self.client.get_trading_fee_transactions(
+                    start_time_us=start_us,
+                    end_time_us=now_us,
+                    product_id=self.put_product_id
+                )
+
+                call_comm = sum(abs(float(t.get("amount", 0))) for t in call_txns)
+                put_comm = sum(abs(float(t.get("amount", 0))) for t in put_txns)
+                trading_fees = call_comm + put_comm
+
+                logger.info(f"Retrieved actual commissions from ledger: Call=${call_comm:.4f}, Put=${put_comm:.4f}, Total=${trading_fees:.4f}")
+            except Exception as e:
+                logger.error(f"Failed to fetch actual commissions from ledger: {e}")
+                trading_fees = None
+
+        # Fallback to simulated fees if live ledger query was skipped/failed
+        if trading_fees is None or self.mode == "paper":
+            # Taker fee is typically 0.03% of notional on entry and exit
+            entry_notional = self.entry_premium * self.lot_size * self.contract_value
+            exit_notional = exit_total * self.lot_size * self.contract_value
+            trading_fees = (entry_notional + exit_notional) * 0.0003
+            logger.info(f"Simulated trading fees (0.03% taker rate): ${trading_fees:.4f}")
+
         logger.info(
             f"Exit complete — "
             f"Entry: ${self.entry_premium:.4f}, Exit: ${exit_total:.4f}, "
-            f"P&L: ${realized_pnl:+.4f}"
+            f"PnL Points: {pnl_points:+.4f}, PnL USD: ${realized_pnl_usd:+.4f}, Fees: ${trading_fees:.4f}"
         )
 
-        # Send exit notification
+        # Send exit notification (pass USD P&L and fees)
         self.notifier.send_exit_alert(
             underlying=self.underlying,
             exit_reason=reason,
             entry_premium=self.entry_premium,
             exit_premium=exit_total,
-            realized_pnl=realized_pnl,
+            realized_pnl=realized_pnl_usd,
             call_symbol=self.call_symbol,
             put_symbol=self.put_symbol,
             exit_call_premium=exit_call_premium,
@@ -464,16 +513,19 @@ class ShortStraddleStrategy:
             mode=self.mode,
         )
 
-        # Journal to Firestore
+        # Journal to Firestore (pnl in USD, additional metrics in kwargs)
         journal_straddle_exit(
             trade_id=self.trade_id,
             exit_reason=reason,
             exit_call_premium=exit_call_premium,
             exit_put_premium=exit_put_premium,
-            realized_pnl=realized_pnl,
-            max_mtm_loss=self.max_mtm_loss,
+            realized_pnl=realized_pnl_usd,
+            max_mtm_loss=self.max_mtm_loss * self.lot_size * self.contract_value,
             call_exit_order_id=call_exit_order_id,
             put_exit_order_id=put_exit_order_id,
+            pnl_points=pnl_points,
+            trading_fees=trading_fees,
+            contract_value=self.contract_value,
         )
 
         logger.info("✅ Straddle exit complete")
