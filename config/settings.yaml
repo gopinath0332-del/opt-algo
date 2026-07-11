@@ -18,7 +18,7 @@ strategy:
     value: 50                 # 50% — exit when combined loss >= 50% of premium
 
   # Monitoring
-  monitor_interval_sec: 5     # Poll interval during SL monitoring (seconds)
+  monitor_interval_sec: 30     # Poll interval during SL monitoring (seconds)
 
 # Notification Settings
 notifications:
