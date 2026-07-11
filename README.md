@@ -59,7 +59,54 @@ Trades are stored in the `options` collection with:
 - `mode: "live"` for production
 - `mode: "paper"` for testnet
 
-### 4. Run
+## Raspberry Pi / Linux Production Deployment
+
+For running in production on a Raspberry Pi or Linux VPS, we run the bot as a background service using `systemd`. This ensures the application automatically boots on startup, restarts on crashes, and routes stdout/stderr directly to system log services.
+
+### Automatic Installation
+
+1. Copy the project folder to your Raspberry Pi (e.g. `/home/pi/opt-algo/`).
+2. Run the deployment script:
+   ```bash
+   chmod +x deploy.sh
+   ./deploy.sh
+   ```
+
+### Manual Service Management
+
+* **Start the bot service**:
+  ```bash
+  sudo systemctl start options-bot
+  ```
+* **Enable autoboot on system startup**:
+  ```bash
+  sudo systemctl enable options-bot
+  ```
+* **Stop the service**:
+  ```bash
+  sudo systemctl stop options-bot
+  ```
+* **Restart the service**:
+  ```bash
+  sudo systemctl restart options-bot
+  ```
+
+### Checking Status and Logs
+
+* **Check service status**:
+  ```bash
+  sudo systemctl status options-bot
+  ```
+* **View live scrolling log output (stdout/stderr)**:
+  ```bash
+  journalctl -u options-bot -f
+  ```
+* **View structured logging file**:
+  ```bash
+  tail -f /home/pi/opt-algo/logs/options.log
+  ```
+
+## Run
 
 ```bash
 # Test run (once, no real orders):
