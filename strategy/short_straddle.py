@@ -156,6 +156,10 @@ class ShortStraddleStrategy:
                 pass
 
         self.entry_premium = self.call_entry_premium + self.put_entry_premium
+        self.call_entry_mark = self.call_entry_premium
+        self.put_entry_mark = self.put_entry_premium
+        self.entry_slippage_usd = 0.0
+
         if self.sl_pct is not None:
             self.sl_threshold = self.entry_premium * self.sl_pct
             sl_threshold_str = f"${self.sl_threshold:.4f}"
@@ -192,6 +196,7 @@ class ShortStraddleStrategy:
                 leverage=self.leverage,
                 sl_threshold=self.sl_threshold,
                 mode=self.mode,
+                entry_slippage_usd=self.entry_slippage_usd,
             )
             return
 
@@ -270,6 +275,12 @@ class ShortStraddleStrategy:
             except Exception as e:
                 logger.warning(f"Failed to fetch actual entry fill prices from orders: {e}")
 
+        # Calculate entry slippage: (Mark - Fill) since we sell options
+        call_entry_slippage = self.call_entry_mark - self.call_entry_premium
+        put_entry_slippage = self.put_entry_mark - self.put_entry_premium
+        self.entry_slippage_usd = (call_entry_slippage + put_entry_slippage) * self.lot_size * self.contract_value
+        logger.info(f"Calculated Entry Slippage: Call=${call_entry_slippage:.4f}, Put=${put_entry_slippage:.4f}, Total=${self.entry_slippage_usd:.4f} USD")
+
         self.entry_premium = self.call_entry_premium + self.put_entry_premium
         self.sl_threshold = self.entry_premium * self.sl_pct
 
@@ -288,6 +299,7 @@ class ShortStraddleStrategy:
             leverage=self.leverage,
             sl_threshold=self.sl_threshold,
             mode=self.mode,
+            entry_slippage_usd=self.entry_slippage_usd,
         )
 
         # Journal to Firestore
@@ -313,6 +325,7 @@ class ShortStraddleStrategy:
             entry_premium_points=self.entry_premium,
             total_premium_collected_usd=self.entry_premium * self.lot_size * self.contract_value,
             contract_value=self.contract_value,
+            entry_slippage_usd=self.entry_slippage_usd,
         )
 
         logger.info("✅ Straddle entry complete")
@@ -438,6 +451,9 @@ class ShortStraddleStrategy:
         exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
         exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
 
+        exit_call_mark = exit_call_premium
+        exit_put_mark = exit_put_premium
+
         call_exit_order_id = None
         put_exit_order_id = None
 
@@ -483,6 +499,15 @@ class ShortStraddleStrategy:
                     logger.warning(f"Failed to fetch actual exit fill prices: {e}")
         else:
             logger.warning("[DISABLED] Order placement disabled — simulating exit")
+
+        # Calculate exit slippage: (Fill - Mark) since we buy back options
+        call_exit_slippage = exit_call_premium - exit_call_mark
+        put_exit_slippage = exit_put_premium - exit_put_mark
+        exit_slippage_usd = (call_exit_slippage + put_exit_slippage) * self.lot_size * self.contract_value
+        total_slippage_usd = self.entry_slippage_usd + exit_slippage_usd
+
+        logger.info(f"Calculated Exit Slippage: Call=${call_exit_slippage:.4f}, Put=${put_exit_slippage:.4f}, Total=${exit_slippage_usd:.4f} USD")
+        logger.info(f"Total Trade Slippage: ${total_slippage_usd:.4f} USD")
 
         exit_total = exit_call_premium + exit_put_premium
         pnl_points = self.entry_premium - exit_total
@@ -546,6 +571,8 @@ class ShortStraddleStrategy:
             exit_call_premium=exit_call_premium,
             exit_put_premium=exit_put_premium,
             mode=self.mode,
+            exit_slippage_usd=exit_slippage_usd,
+            total_slippage_usd=total_slippage_usd,
         )
 
         # Journal to Firestore (pnl in USD, additional metrics in kwargs)
@@ -561,6 +588,8 @@ class ShortStraddleStrategy:
             pnl_points=pnl_points,
             trading_fees=trading_fees,
             contract_value=self.contract_value,
+            exit_slippage_usd=exit_slippage_usd,
+            total_slippage_usd=total_slippage_usd,
         )
 
         logger.info("✅ Straddle exit complete")

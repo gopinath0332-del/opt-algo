@@ -70,25 +70,11 @@ class DiscordNotifier:
         leverage: int,
         sl_threshold: float,
         mode: str = "live",
+        entry_slippage_usd: Optional[float] = None,
     ) -> None:
-        """Send a straddle entry notification.
-
-        Args:
-            underlying: Underlying asset (e.g., 'BTC')
-            strategy_name: Strategy name
-            spot_price: Spot price at entry
-            atm_strike: ATM strike selected
-            call_symbol: Call option symbol
-            put_symbol: Put option symbol
-            call_premium: Premium for call leg
-            put_premium: Premium for put leg
-            total_premium: Total premium collected
-            lot_size: Contracts per leg
-            leverage: Leverage used
-            sl_threshold: Stop-loss threshold (dollar amount)
-            mode: 'live' or 'paper'
-        """
+        """Send a straddle entry notification."""
         mode_color = "1;32" if mode == "live" else "1;36"
+        sl_str = "Disabled" if sl_threshold == float('inf') else f"${self._f(sl_threshold)}"
 
         message = (
             f"Strategy: \u001b[1;37m{strategy_name}\u001b[0m\n"
@@ -106,10 +92,13 @@ class DiscordNotifier:
             f"Total Premium: \u001b[0;32m${self._f(total_premium)}\u001b[0m\n"
             f"Lot Size: \u001b[0;36m{lot_size}\u001b[0m per leg\n"
             f"Leverage: \u001b[0;35m{leverage}x\u001b[0m\n"
-            f"Combined SL: \u001b[0;31m${self._f(sl_threshold)}\u001b[0m (50% of premium)\n"
-            f"\n"
-            f"Time: {time.strftime('%H:%M:%S IST')}"
+            f"Combined SL: \u001b[0;31m{sl_str}\u001b[0m\n"
         )
+
+        if entry_slippage_usd is not None:
+            message += f"Entry Slippage: \u001b[0;35m${self._f(entry_slippage_usd, 2)}\u001b[0m\n"
+
+        message += f"\nTime: {time.strftime('%H:%M:%S IST')}"
 
         formatted = f"```ansi\n{message}\n```"
         title = f"📊 SHORT STRADDLE ENTRY — {underlying} @ Strike {self._f(atm_strike, 0)}"
@@ -129,21 +118,10 @@ class DiscordNotifier:
         exit_call_premium: float,
         exit_put_premium: float,
         mode: str = "live",
+        exit_slippage_usd: Optional[float] = None,
+        total_slippage_usd: Optional[float] = None,
     ) -> None:
-        """Send a straddle exit notification.
-
-        Args:
-            underlying: Underlying asset
-            exit_reason: Why the position was closed
-            entry_premium: Total premium at entry
-            exit_premium: Total premium at exit (cost to close)
-            realized_pnl: Realized P&L
-            call_symbol: Call option symbol
-            put_symbol: Put option symbol
-            exit_call_premium: Call premium at exit
-            exit_put_premium: Put premium at exit
-            mode: 'live' or 'paper'
-        """
+        """Send a straddle exit notification."""
         pnl_color = "0;32" if realized_pnl >= 0 else "0;31"
         pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
         mode_color = "1;32" if mode == "live" else "1;36"
@@ -160,9 +138,14 @@ class DiscordNotifier:
             f"Entry Premium: \u001b[0;36m${self._f(entry_premium)}\u001b[0m\n"
             f"Exit Premium: \u001b[0;36m${self._f(exit_premium)}\u001b[0m\n"
             f"Realized P&L: \u001b[{pnl_color}m${self._f(realized_pnl)}\u001b[0m\n"
-            f"\n"
-            f"Time: {time.strftime('%H:%M:%S IST')}"
         )
+
+        if exit_slippage_usd is not None:
+            message += f"Exit Slippage: \u001b[0;35m${self._f(exit_slippage_usd, 2)}\u001b[0m\n"
+        if total_slippage_usd is not None:
+            message += f"Total Slippage: \u001b[0;35m${self._f(total_slippage_usd, 2)}\u001b[0m\n"
+
+        message += f"\nTime: {time.strftime('%H:%M:%S IST')}"
 
         formatted = f"```ansi\n{message}\n```"
         title = f"{pnl_emoji} SHORT STRADDLE EXIT — {underlying} | {exit_reason}"
