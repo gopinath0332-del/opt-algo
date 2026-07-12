@@ -348,8 +348,7 @@ class ReportGenerator:
             </table>
           </div>
           <p style="font-size:.75rem;color:#7986a0;margin-top:10px">
-            Fee: Deribit 0.03% of underlying (ATM strike), capped at 12.5% of premium.
-            Slippage applied equally to entry and exit legs.
+            Fee: Delta Exchange 0.03% taker fee on entry (capped at 3.5% of premium). Expiry trades are cash-settled with no slippage and 0.01% settlement fee (capped at 10% of payout) for the ITM leg. Stop-loss hits (if any) are closed early with taker fees and slippage on exit.
           </p>
         </div>
         """

@@ -6,7 +6,7 @@ strategy:
   name: "short_straddle"
   underlying: "BTC"           # Change to "ETH" or other supported assets in future
   entry_time: "17:00"         # IST — daily entry time
-  exit_time: "17:25"          # IST — daily exit time
+  exit_time: "17:30"          # IST — daily expiry / settlement time
   timezone: "Asia/Kolkata"    # IST
   lot_size: 150               # Contracts per leg
   leverage: 200               # 200x leverage

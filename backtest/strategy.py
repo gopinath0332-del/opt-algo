@@ -76,19 +76,37 @@ class TradeResult:
         self.pnl_usd = (self.entry_premium - self.exit_premium) * self.lot_size * self.contract_value
 
         # ---- Trading fee --------------------------------------------------
-        # 4 transactions: entry C, entry P, exit C, exit P
-        # Fee per contract per transaction = fee_rate * spot (ATM strike as proxy)
         if self.fee_rate > 0 and self.spot_estimate:
-            raw_fee = 4 * self.lot_size * self.contract_value * self.fee_rate * self.spot_estimate
-            # Cap: fee_cap_pct of total premium value traded across all 4 fills
-            premium_cap = (self.fee_cap_pct / 100.0) * (self.entry_premium + self.exit_premium) * self.lot_size * self.contract_value
-            self.fee_usd = min(raw_fee, premium_cap)
+            if self.exit_reason == "sl_hit":
+                # Closed early: 4 taker transactions
+                raw_fee = 4 * self.lot_size * self.contract_value * self.fee_rate * self.spot_estimate
+                premium_cap = (self.fee_cap_pct / 100.0) * (self.entry_premium + self.exit_premium) * self.lot_size * self.contract_value
+                self.fee_usd = min(raw_fee, premium_cap)
+            else:
+                # Held to expiry: 2 entry taker transactions + 1 settlement transaction (for the ITM leg)
+                # Entry fees:
+                raw_entry_fee = 2 * self.lot_size * self.contract_value * self.fee_rate * self.spot_estimate
+                entry_cap = (self.fee_cap_pct / 100.0) * self.entry_premium * self.lot_size * self.contract_value
+                entry_fee = min(raw_entry_fee, entry_cap)
+
+                # Settlement fee for ITM leg (0.01% of spot, capped at 10% of option payout)
+                settle_fee_rate = 0.0001
+                raw_settle_fee = self.lot_size * self.contract_value * settle_fee_rate * self.spot_estimate
+                settle_cap = 0.10 * self.exit_premium * self.lot_size * self.contract_value
+                settle_fee = min(raw_settle_fee, settle_cap)
+
+                self.fee_usd = entry_fee + settle_fee
         else:
             self.fee_usd = 0.0
 
         # ---- Slippage cost ------------------------------------------------
         s = self.slippage_pct / 100.0
-        self.slippage_usd = (self.entry_premium + self.exit_premium) * s * self.lot_size * self.contract_value
+        if self.exit_reason == "sl_hit":
+            # Slippage on both entry and exit
+            self.slippage_usd = (self.entry_premium + self.exit_premium) * s * self.lot_size * self.contract_value
+        else:
+            # Held to expiry: slippage on entry only!
+            self.slippage_usd = self.entry_premium * s * self.lot_size * self.contract_value
 
         self.net_pnl_usd = self.pnl_usd - self.fee_usd - self.slippage_usd
 

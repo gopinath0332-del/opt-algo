@@ -184,7 +184,13 @@ class Portfolio:
             # Additional slippage cost vs base slippage already baked in
             base_s = self.cfg.slippage_pct / 100.0
             delta_s = s - base_s   # extra slippage on top of what's already calculated
-            extra_slip = (df["entry_premium"] + df["exit_premium"]) * delta_s * df["lot_size"]
+            is_sl_hit = (df["exit_reason"] == "sl_hit")
+            multiplier_premium = np.where(
+                is_sl_hit,
+                df["entry_premium"] + df["exit_premium"],
+                df["entry_premium"]
+            )
+            extra_slip = multiplier_premium * delta_s * df["lot_size"] * self.cfg.contract_value
             adj_net = df["net_pnl_usd"] - extra_slip
 
             equity   = self.cfg.initial_capital + adj_net.cumsum()
