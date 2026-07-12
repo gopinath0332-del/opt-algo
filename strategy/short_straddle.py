@@ -46,7 +46,7 @@ class ShortStraddleStrategy:
         self.underlying = config.strategy.underlying
         self.lot_size = config.strategy.lot_size
         self.leverage = config.strategy.leverage
-        self.sl_pct = config.strategy.stop_loss.value / 100.0  # Convert 50 -> 0.5
+        self.sl_pct = config.strategy.stop_loss.value / 100.0 if config.strategy.stop_loss else None
         self.monitor_interval = config.strategy.monitor_interval_sec
         self.order_type = config.strategy.order_type
 
@@ -156,13 +156,18 @@ class ShortStraddleStrategy:
                 pass
 
         self.entry_premium = self.call_entry_premium + self.put_entry_premium
-        self.sl_threshold = self.entry_premium * self.sl_pct
+        if self.sl_pct is not None:
+            self.sl_threshold = self.entry_premium * self.sl_pct
+            sl_threshold_str = f"${self.sl_threshold:.4f}"
+        else:
+            self.sl_threshold = float('inf')
+            sl_threshold_str = "None (Disabled)"
 
         logger.info(
             f"Entry premiums — Call: ${self.call_entry_premium:.4f}, "
             f"Put: ${self.put_entry_premium:.4f}, "
             f"Total: ${self.entry_premium:.4f}, "
-            f"SL Threshold (50%): ${self.sl_threshold:.4f}"
+            f"SL Threshold: {sl_threshold_str}"
         )
 
         if not self.order_placement_enabled:
@@ -335,7 +340,8 @@ class ShortStraddleStrategy:
         exit_h, exit_m = map(int, exit_time_str.split(":"))
         exit_time = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
 
-        logger.info(f"Monitoring until {exit_time_str} IST (SL threshold: ${self.sl_threshold:.4f})")
+        sl_threshold_str = f"${self.sl_threshold:.4f}" if self.sl_pct is not None else "None (Disabled)"
+        logger.info(f"Monitoring until {exit_time_str} IST (SL threshold: {sl_threshold_str})")
 
         while True:
             now = datetime.now(IST)

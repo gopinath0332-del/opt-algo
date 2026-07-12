@@ -13,9 +13,7 @@ strategy:
   order_type: "market_order"  # Market orders for instant fill
 
   # Combined Stop-Loss Configuration
-  stop_loss:
-    type: "premium_pct"       # % of entry premium collected
-    value: 50                 # 50% — exit when combined loss >= 50% of premium
+  stop_loss: null
 
   # Monitoring
   monitor_interval_sec: 30     # Poll interval during SL monitoring (seconds)

@@ -32,7 +32,7 @@ class StrategyConfig(BaseModel):
     lot_size: int = Field(default=250, gt=0)
     leverage: int = Field(default=200, gt=0)
     order_type: str = Field(default="market_order")
-    stop_loss: StopLossConfig = Field(default_factory=StopLossConfig)
+    stop_loss: Optional[StopLossConfig] = Field(default=None)
     monitor_interval_sec: int = Field(default=5, gt=0)
 
 

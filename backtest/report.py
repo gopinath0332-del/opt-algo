@@ -419,6 +419,7 @@ class ReportGenerator:
         period = f"{df['date'].min().date()} to {df['date'].max().date()}"
         fee_info = f"Fee: {self.cfg.fee_rate*100:.3f}% of underlying"
         slip_info = f"Slippage: {self.cfg.slippage_pct:.1f}%"
+        sl_display = "None (Disabled)" if self.cfg.sl_pct >= 9999.0 else f"{self.cfg.sl_pct:.0f}% of premium"
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -435,7 +436,7 @@ class ReportGenerator:
     <div class="meta">
       Period: {period} &nbsp;|&nbsp; Capital: ${self.cfg.initial_capital:,.0f}
       &nbsp;|&nbsp; Lot Size: {self.cfg.lot_size} &nbsp;|&nbsp;
-      SL: {self.cfg.sl_pct:.0f}% of premium &nbsp;|&nbsp;
+      SL: {sl_display} &nbsp;|&nbsp;
       {fee_info} &nbsp;|&nbsp; {slip_info}
       &nbsp;|&nbsp; Generated: {gen} UTC
     </div>

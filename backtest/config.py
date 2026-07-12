@@ -51,7 +51,11 @@ _strat = _settings.get("strategy", {})
 LIVE_ENTRY_TIME = _parse_time_utc(_strat.get("entry_time", "17:00"), _strat.get("timezone", "Asia/Kolkata"))
 LIVE_EXIT_TIME  = _parse_time_utc(_strat.get("exit_time", "17:25"), _strat.get("timezone", "Asia/Kolkata"))
 LIVE_LOT_SIZE   = int(_strat.get("lot_size", 150))
-LIVE_SL_PCT     = float(_strat.get("stop_loss", {}).get("value", 50.0))
+_sl_conf = _strat.get("stop_loss")
+if isinstance(_sl_conf, dict):
+    LIVE_SL_PCT = float(_sl_conf.get("value", 9999.0))
+else:
+    LIVE_SL_PCT = 9999.0
 
 # ---------------------------------------------------------------------------
 # BacktestConfig
