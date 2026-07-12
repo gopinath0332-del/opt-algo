@@ -72,15 +72,15 @@ class BacktestConfig:
 
     # ---- Position sizing --------------------------------------------------
     lot_size: int = LIVE_LOT_SIZE        # Dynamically mirrored from config/settings.yaml
+    contract_value: float = 0.001        # BTC contract size multiplier (0.001 for BTC)
     initial_capital: float = 1_000.0     # USD — for % return calculation
 
     # ---- Stop-loss --------------------------------------------------------
     sl_pct: float = LIVE_SL_PCT          # Dynamically mirrored from config/settings.yaml
 
-    # ---- Trading fees -----------------------------------------------------
-    # Deribit options fee: 0.03% of underlying value per contract per side
-    # Capped at 12.5% of option premium per option. Set 0 to disable.
+    # Deribit/Delta options fee rate (0.03% of underlying notional per side)
     fee_rate: float = 0.0003     # 0.03% of underlying
+    fee_cap_pct: float = 3.5     # Capped at 3.5% of option premium per leg
 
     # ---- Slippage ---------------------------------------------------------
     # % of option premium lost to slippage on each leg, each side.
@@ -93,8 +93,9 @@ class BacktestConfig:
     expiry_filter: str = "same_day"
 
     # ---- SL monitoring ----------------------------------------------------
-    # "tick" → evaluate SL on every tick between entry and exit
-    sl_mode: str = "tick"
+    # "tick"   → evaluate SL on every raw trade tick
+    # "minute" → evaluate SL on 1-minute close (filters out execution noise)
+    sl_mode: str = "minute"
 
     # ---- Strike selection -------------------------------------------------
     # "parity" → pick strike where |call_price - put_price| is minimised

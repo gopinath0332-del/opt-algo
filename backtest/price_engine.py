@@ -146,13 +146,21 @@ def get_tick_prices_after_entry(
     put_strike: float,
     entry_ts: pd.Timestamp,
     exit_ts: pd.Timestamp,
+    entry_call: float,
+    entry_put: float,
 ) -> pd.DataFrame:
     """
     Return all ticks for the straddle legs between entry_ts and exit_ts.
-    Each row has: ts, call_price, put_price (forward-filled so both legs
-    always have a value).
-    Used for tick-level SL monitoring.
+    Uses entry_call and entry_put to initialize the prices at entry_ts,
+    then forward-fills subsequent trade ticks to prevent stale pre-entry price leakage.
     """
+    # Create the starting entry row
+    start_df = pd.DataFrame([{
+        "ts": entry_ts,
+        "call_price": entry_call,
+        "put_price": entry_put
+    }]).set_index("ts")
+
     mask = (
         (
             ((day_df["opt_type"] == "C") & (day_df["strike"] == call_strike)) |
@@ -162,8 +170,10 @@ def get_tick_prices_after_entry(
         (day_df["ts"] <= exit_ts)
     )
     ticks = day_df[mask].copy()
+
     if ticks.empty:
-        return pd.DataFrame(columns=["ts", "call_price", "put_price"])
+        start_df.reset_index(inplace=True)
+        return start_df
 
     ticks = ticks.sort_values("ts")
 
@@ -179,7 +189,10 @@ def get_tick_prices_after_entry(
     )
 
     combined = pd.concat([c_ticks, p_ticks], axis=1).sort_index()
-    combined = combined.ffill().dropna()   # need both legs to check SL
+    
+    # Prepend starting entry row so we start tracking from exactly entry prices
+    combined = pd.concat([start_df, combined]).sort_index()
+    combined = combined.ffill()
+    
     combined.reset_index(inplace=True)
-    combined.rename(columns={"index": "ts"}, inplace=True)
     return combined
