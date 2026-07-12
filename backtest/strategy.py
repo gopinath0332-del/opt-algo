@@ -142,6 +142,12 @@ class ShortStraddleEngine:
             self._skip(trade_date, "zero entry premium")
             return None
 
+        # Ignore trade if the premium difference of call and put is more than 50
+        prem_diff = abs(entry_call - entry_put)
+        if prem_diff > 50.0:
+            self._skip(trade_date, f"premium difference too high ({prem_diff:.2f} > 50)")
+            return None
+
         # SL fires when combined exit premium ≥ entry_premium × (1 + sl_pct/100)
         sl_threshold = entry_premium * (1.0 + cfg.sl_pct / 100.0)
 
