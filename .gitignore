@@ -74,6 +74,9 @@ data/state/
 reports/*.pdf
 *.pdf
 
+# Backtest generated reports (HTML, CSV, equity curves)
+backtest/reports/
+
 # OS
 .DS_Store
 Thumbs.db
