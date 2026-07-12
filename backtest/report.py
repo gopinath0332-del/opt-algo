@@ -285,27 +285,74 @@ class ReportGenerator:
     def _build_html(self) -> str:
         s  = self.stats
         df = self.df
-        tp = s["total_pnl_usd"]
+        tp = s["total_pnl_usd"]   # net
+        gp = s["gross_pnl_usd"]
         pc = "pos" if tp >= 0 else "neg"
         sr_c = "pos" if s["sharpe_ratio"] >= 1 else ("neg" if s["sharpe_ratio"] < 0 else "neu")
 
         kpis = "".join([
-            _kpi("Total P&L",       f"${tp:+,.2f}",                 pc),
-            _kpi("Total Return",    f"{s['total_return_pct']:+.2f}%", pc),
-            _kpi("Final Equity",    f"${s['final_equity']:,.2f}",    "neu"),
-            _kpi("Win Rate",        f"{s['win_rate_pct']:.1f}%",
+            _kpi("Net P&L",        f"${tp:+,.2f}",                 pc),
+            _kpi("Total Return",   f"{s['total_return_pct']:+.2f}%", pc),
+            _kpi("Final Equity",   f"${s['final_equity']:,.2f}",    "neu"),
+            _kpi("Win Rate",       f"{s['win_rate_pct']:.1f}%",
                  "pos" if s["win_rate_pct"] >= 50 else "neg"),
-            _kpi("Total Trades",    str(s["total_trades"]),          "neu"),
-            _kpi("Sharpe Ratio",    f"{s['sharpe_ratio']:.2f}",      sr_c),
-            _kpi("Max Drawdown",    f"${s['max_drawdown_usd']:+,.2f}","neg"),
-            _kpi("Profit Factor",   f"{s['profit_factor']:.2f}",
+            _kpi("Total Trades",   str(s["total_trades"]),          "neu"),
+            _kpi("Sharpe Ratio",   f"{s['sharpe_ratio']:.2f}",      sr_c),
+            _kpi("Max Drawdown",   f"${s['max_drawdown_usd']:+,.2f}","neg"),
+            _kpi("Profit Factor",  f"{s['profit_factor']:.2f}",
                  "pos" if s["profit_factor"] >= 1 else "neg"),
-            _kpi("Calmar Ratio",    f"{s['calmar_ratio']:.2f}",      "neu"),
-            _kpi("Avg P&L/Trade",   f"${s['avg_pnl_per_trade']:+.2f}",
+            _kpi("Gross P&L",      f"${gp:+,.2f}",
+                 "pos" if gp >= 0 else "neg"),
+            _kpi("Trading Fees",   f"${s['total_fee_usd']:,.2f}",   "neg"),
+            _kpi("Slippage Cost",  f"${s['total_slippage_usd']:,.2f}","neg"),
+            _kpi("Avg Net/Trade",  f"${s['avg_pnl_per_trade']:+.2f}",
                  "pos" if s["avg_pnl_per_trade"] >= 0 else "neg"),
-            _kpi("Avg Hold Time",   f"{s['avg_hold_minutes']:.1f} min","neu"),
-            _kpi("SL Hits",         str(s["sl_hit_count"]),          "neg"),
+            _kpi("Avg Hold Time",  f"{s['avg_hold_minutes']:.1f} min","neu"),
+            _kpi("SL Hits",        str(s["sl_hit_count"]),          "neg"),
         ])
+
+        # ---- Slippage sensitivity table -----------------------------------
+        slip_df = self.port.slippage_sensitivity()
+        slip_rows = ""
+        display_cols = ["Slippage","Net P&L","Return %","Win Rate",
+                        "Profit Factor","Sharpe","Max DD","Final Equity"]
+        for _, r in slip_df.iterrows():
+            is_base = r["Slippage"] == f"{self.cfg.slippage_pct:.1f}%"
+            hi = ' style="background:rgba(66,165,245,0.08);"' if is_base else ""
+            net = r["_net_pnl"]
+            col = "#26a69a" if net >= 0 else "#ef5350"
+            slip_rows += f"<tr{hi}>"
+            slip_rows += f"<td style='font-weight:600'>{r['Slippage']}"
+            if is_base:
+                slip_rows += " <span style='font-size:.65rem;color:#42a5f5'>(active)</span>"
+            slip_rows += "</td>"
+            slip_rows += f"<td style='color:{col};font-weight:600'>{r['Net P&L']}</td>"
+            slip_rows += f"<td style='color:{col}'>{r['Return %']}</td>"
+            slip_rows += f"<td>{r['Win Rate']}</td>"
+            slip_rows += f"<td>{r['Profit Factor']}</td>"
+            slip_rows += f"<td>{r['Sharpe']}</td>"
+            slip_rows += f"<td>{r['Max DD']}</td>"
+            slip_rows += f"<td>{r['Final Equity']}</td>"
+            slip_rows += "</tr>"
+
+        slippage_section = f"""
+        <div class="section">
+          <div class="section-title">Slippage Sensitivity Analysis</div>
+          <div style="overflow-x:auto">
+            <table>
+              <thead><tr>
+                <th>Slippage</th><th>Net P&amp;L</th><th>Return %</th><th>Win Rate</th>
+                <th>Profit Factor</th><th>Sharpe</th><th>Max DD</th><th>Final Equity</th>
+              </tr></thead>
+              <tbody>{slip_rows}</tbody>
+            </table>
+          </div>
+          <p style="font-size:.75rem;color:#7986a0;margin-top:10px">
+            Fee: Deribit 0.03% of underlying (ATM strike), capped at 12.5% of premium.
+            Slippage applied equally to entry and exit legs.
+          </p>
+        </div>
+        """
 
         charts = ""
         if PLOTLY_AVAILABLE:
@@ -314,7 +361,7 @@ class ReportGenerator:
             charts = f"""
             {cdn}
             <div class="section">
-              <div class="section-title">Equity &amp; Performance</div>
+              <div class="section-title">Equity &amp; Performance (Net of Fees)</div>
               <div class="chart-full chart-box">{_html(_equity_chart(df, self.cfg.initial_capital))}</div>
               <div class="chart-row">
                 <div class="chart-box">{_html(_daily_pnl_chart(df))}</div>
@@ -322,7 +369,7 @@ class ReportGenerator:
               </div>
             </div>
             <div class="section">
-              <div class="section-title">Monthly Breakdown</div>
+              <div class="section-title">Monthly Breakdown (Net P&amp;L)</div>
               <div class="chart-full chart-box">{_html(_monthly_heatmap(s["monthly_pnl"]))}</div>
             </div>
             <div class="section">
@@ -340,25 +387,38 @@ class ReportGenerator:
             </div>
             """
 
-        # Trade log (newest 100)
+        # Trade log (newest 100) — show gross + fee + net, call/put split
         show = df.sort_values("date", ascending=False).head(100)
         rows = ""
         for _, r in show.iterrows():
-            col = "#26a69a" if r["pnl_usd"] >= 0 else "#ef5350"
+            net = r.get("net_pnl_usd", r["pnl_usd"])
+            col = "#26a69a" if net >= 0 else "#ef5350"
             rows += (
-                f"<tr>"
+                f"<tr data-exit-reason='{r['exit_reason']}'>"
                 f"<td>{pd.Timestamp(r['date']).date()}</td>"
                 f"<td>{int(r['atm_strike']):,}</td>"
-                f"<td>${r['entry_premium']:.2f}</td>"
-                f"<td>${r['exit_premium']:.2f}</td>"
-                f"<td style='color:{col};font-weight:600'>${r['pnl_usd']:+,.2f}</td>"
+                # Entry: call + put
+                f"<td>${r['entry_call']:.2f}</td>"
+                f"<td>${r['entry_put']:.2f}</td>"
+                f"<td style='color:#90caf9'>${r['entry_premium']:.2f}</td>"
+                # Exit: call + put
+                f"<td>${r['exit_call']:.2f}</td>"
+                f"<td>${r['exit_put']:.2f}</td>"
+                f"<td style='color:#90caf9'>${r['exit_premium']:.2f}</td>"
+                # P&L breakdown
+                f"<td>${r['pnl_usd']:+,.2f}</td>"
+                f"<td>-${r.get('fee_usd', 0):.2f}</td>"
+                f"<td>-${r.get('slippage_usd', 0):.2f}</td>"
+                f"<td style='color:{col};font-weight:600'>${net:+,.2f}</td>"
                 f"<td>{r['hold_minutes']:.0f} min</td>"
                 f"<td>{_tag(r['exit_reason'])}</td>"
                 f"</tr>"
             )
 
         gen = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        period = f"{df['date'].min().date()} → {df['date'].max().date()}"
+        period = f"{df['date'].min().date()} to {df['date'].max().date()}"
+        fee_info = f"Fee: {self.cfg.fee_rate*100:.3f}% of underlying"
+        slip_info = f"Slippage: {self.cfg.slippage_pct:.1f}%"
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -371,31 +431,62 @@ class ReportGenerator:
 <body>
 <div class="hero">
   <div class="container">
-    <h1>⚡ BTC Short Straddle Backtest</h1>
+    <h1>&#9889; BTC Short Straddle Backtest</h1>
     <div class="meta">
       Period: {period} &nbsp;|&nbsp; Capital: ${self.cfg.initial_capital:,.0f}
       &nbsp;|&nbsp; Lot Size: {self.cfg.lot_size} &nbsp;|&nbsp;
-      SL: {self.cfg.sl_pct:.0f}% of premium &nbsp;|&nbsp; Generated: {gen} UTC
+      SL: {self.cfg.sl_pct:.0f}% of premium &nbsp;|&nbsp;
+      {fee_info} &nbsp;|&nbsp; {slip_info}
+      &nbsp;|&nbsp; Generated: {gen} UTC
     </div>
   </div>
 </div>
 <div class="container">
   <div class="kpi-grid">{kpis}</div>
+  {slippage_section}
   {charts}
   <div class="section">
-    <div class="section-title">Trade Log (Latest 100)</div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px">
+      <div class="section-title" style="margin-bottom:0">Trade Log (Latest 100)</div>
+      <div style="font-size:0.85rem; display:flex; align-items:center; gap:8px">
+        <span style="color:#7986a0">Filter Exit Reason:</span>
+        <select id="exit-reason-filter" onchange="filterTrades()" style="background:#13192e; color:#e0e6f0; border:1px solid rgba(255,255,255,0.15); padding:6px 12px; border-radius:6px; outline:none; cursor:pointer; font-size:0.8rem">
+          <option value="all">All Exits</option>
+          <option value="sl_hit">SL Hit Only</option>
+          <option value="time_exit">Time Exit Only</option>
+        </select>
+      </div>
+    </div>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
-          <th>Date</th><th>ATM Strike</th><th>Entry Premium</th>
-          <th>Exit Premium</th><th>P&amp;L (USD)</th>
-          <th>Hold Time</th><th>Exit Reason</th>
+          <th>Date</th><th>ATM Strike</th>
+          <th>Entry Call</th><th>Entry Put</th><th>Entry Total</th>
+          <th>Exit Call</th><th>Exit Put</th><th>Exit Total</th>
+          <th>Gross P&amp;L</th><th>Fee</th><th>Slippage</th>
+          <th>Net P&amp;L</th><th>Hold Time</th><th>Exit Reason</th>
         </tr></thead>
-        <tbody>{rows}</tbody>
+        <tbody id="trade-log-body">{rows}</tbody>
       </table>
     </div>
   </div>
-  <div class="footer">BTC Short Straddle Backtest · opt-algo · {gen}</div>
+  <div class="footer">BTC Short Straddle Backtest &middot; opt-algo &middot; {gen}</div>
 </div>
+<script>
+function filterTrades() {{
+  const val = document.getElementById('exit-reason-filter').value;
+  const rows = document.querySelectorAll('#trade-log-body tr');
+  rows.forEach(row => {{
+    const reason = row.getAttribute('data-exit-reason');
+    if (val === 'all') {{
+      row.style.display = '';
+    }} else if (val === 'sl_hit') {{
+      row.style.display = (reason === 'sl_hit') ? '' : 'none';
+    }} else if (val === 'time_exit') {{
+      row.style.display = (reason === 'time_exit' || reason === 'time_exit_fallback') ? '' : 'none';
+    }}
+  }});
+}}
+</script>
 </body>
 </html>"""

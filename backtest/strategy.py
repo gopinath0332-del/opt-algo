@@ -54,18 +54,45 @@ class TradeResult:
     exit_ts:        pd.Timestamp
     exit_call:      float
     exit_put:       float
-    exit_premium:   float          # call + put at exit
+    exit_premium:   float          # call + put at exit (raw market prices)
 
     exit_reason:    str            # "time_exit" | "sl_hit" | "time_exit_fallback"
     lot_size:       int
     sl_threshold:   float          # premium level that triggers SL
     spot_estimate:  Optional[float]
+    fee_rate:       float          # e.g. 0.0003 for Deribit 0.03%
+    slippage_pct:   float          # e.g. 1.0 for 1%
 
-    # Derived
-    pnl_usd: float = 0.0
+    # Derived (set in __post_init__)
+    pnl_usd:        float = 0.0    # gross P&L (entry_prem - exit_prem) * lot_size
+    fee_usd:        float = 0.0    # trading fee (Deribit: 0.03% underlying, capped)
+    slippage_usd:   float = 0.0    # cost of bid-ask slippage
+    net_pnl_usd:    float = 0.0    # pnl_usd - fee_usd - slippage_usd
 
     def __post_init__(self):
+        # Gross P&L
         self.pnl_usd = (self.entry_premium - self.exit_premium) * self.lot_size
+
+        # ---- Trading fee --------------------------------------------------
+        # 4 transactions: entry C, entry P, exit C, exit P
+        # Fee per contract per transaction = fee_rate * spot (ATM strike as proxy)
+        if self.fee_rate > 0 and self.spot_estimate:
+            raw_fee = 4 * self.lot_size * self.fee_rate * self.spot_estimate
+            # Cap: 12.5% of total premium value traded across all 4 fills
+            # Total notional premium = (entry + exit) * lot_size (both legs combined)
+            premium_cap = 0.125 * (self.entry_premium + self.exit_premium) * self.lot_size
+            self.fee_usd = min(raw_fee, premium_cap)
+        else:
+            self.fee_usd = 0.0
+
+        # ---- Slippage cost ------------------------------------------------
+        # Entry: we receive entry_premium * (1 - s) instead of entry_premium
+        # Exit:  we pay    exit_premium  * (1 + s) instead of exit_premium
+        # Net slippage loss = (entry_premium + exit_premium) * s * lot_size
+        s = self.slippage_pct / 100.0
+        self.slippage_usd = (self.entry_premium + self.exit_premium) * s * self.lot_size
+
+        self.net_pnl_usd = self.pnl_usd - self.fee_usd - self.slippage_usd
 
 
 @dataclass
@@ -202,12 +229,14 @@ class ShortStraddleEngine:
             lot_size      = cfg.lot_size,
             sl_threshold  = sl_threshold,
             spot_estimate = atm,
+            fee_rate      = cfg.fee_rate,
+            slippage_pct  = cfg.slippage_pct,
         )
 
         log.info(
-            "%s | Strike=%g | Premium %.2f→%.2f | P&L $%.2f | %s",
+            "%s | Strike=%g | Premium %.2f->%.2f | Gross $%.2f | Fee $%.2f | Net $%.2f | %s",
             trade_date, atm, entry_premium, exit_premium,
-            result.pnl_usd, exit_reason,
+            result.pnl_usd, result.fee_usd, result.net_pnl_usd, exit_reason,
         )
 
         self.trades.append(result)

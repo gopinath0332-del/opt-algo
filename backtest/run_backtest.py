@@ -41,7 +41,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # Allow running from the opt-algo root: python backtest/run_backtest.py
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backtest.config import BacktestConfig, REPORTS_DIR
+from backtest.config import BacktestConfig, REPORTS_DIR, LIVE_LOT_SIZE, LIVE_SL_PCT
 from backtest.data_loader import iter_trading_days
 from backtest.strategy import ShortStraddleEngine
 from backtest.portfolio import Portfolio
@@ -58,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--end",      default="2026-06", metavar="YYYY-MM")
     p.add_argument("--month",    default=None,       metavar="YYYY-MM",
                    help="Run a single month (overrides --start/--end)")
-    p.add_argument("--lot-size", type=int,   default=150)
-    p.add_argument("--sl-pct",   type=float, default=50.0)
+    p.add_argument("--lot-size", type=int,   default=LIVE_LOT_SIZE)
+    p.add_argument("--sl-pct",   type=float, default=LIVE_SL_PCT)
     p.add_argument("--capital",  type=float, default=1_000.0)
     p.add_argument("--verbose",  action="store_true")
     return p.parse_args()

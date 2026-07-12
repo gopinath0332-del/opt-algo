@@ -2,14 +2,15 @@
 backtest/config.py
 ==================
 All configuration constants for the short-straddle backtest.
-Mirrors strategy parameters from config/settings.yaml and adds
-backtest-specific settings.
+Dynamically loads and mirrors live strategy parameters from config/settings.yaml
+to keep backtest and live execution completely in sync.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from datetime import time
-
+from datetime import time, datetime, timedelta
+from zoneinfo import ZoneInfo
+import yaml
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -17,6 +18,40 @@ from datetime import time
 DATA_DIR = Path(r"D:\Workspace\crypto-backtest-data\options")
 REPORTS_DIR = Path(__file__).parent / "reports"
 
+# ---------------------------------------------------------------------------
+# Dynamic settings loading from live config/settings.yaml
+# ---------------------------------------------------------------------------
+def _load_live_settings() -> dict:
+    settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+    if not settings_path.exists():
+        return {}
+    try:
+        with open(settings_path, "r") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+def _parse_time_utc(time_str: str, tz_name: str) -> time:
+    hour, minute = map(int, time_str.split(":"))
+    dt = datetime(2025, 1, 1, hour, minute)
+    try:
+        tz = ZoneInfo(tz_name)
+        localized = dt.replace(tzinfo=tz)
+        return localized.astimezone(ZoneInfo("UTC")).time()
+    except Exception:
+        # Fallback for Asia/Kolkata -> UTC (UTC+5:30 -> subtract 5h 30m)
+        total_minutes = hour * 60 + minute - 330
+        if total_minutes < 0:
+            total_minutes += 24 * 60
+        return time((total_minutes // 60) % 24, total_minutes % 60)
+
+_settings = _load_live_settings()
+_strat = _settings.get("strategy", {})
+
+LIVE_ENTRY_TIME = _parse_time_utc(_strat.get("entry_time", "17:00"), _strat.get("timezone", "Asia/Kolkata"))
+LIVE_EXIT_TIME  = _parse_time_utc(_strat.get("exit_time", "17:25"), _strat.get("timezone", "Asia/Kolkata"))
+LIVE_LOT_SIZE   = int(_strat.get("lot_size", 150))
+LIVE_SL_PCT     = float(_strat.get("stop_loss", {}).get("value", 50.0))
 
 # ---------------------------------------------------------------------------
 # BacktestConfig
@@ -28,20 +63,30 @@ class BacktestConfig:
     end_month: str   = "2026-06"        # inclusive, format YYYY-MM
 
     # ---- Strategy timing (UTC) -------------------------------------------
-    # 17:00 IST = 11:30 UTC  |  17:25 IST = 11:55 UTC
-    entry_time_utc: time = field(default_factory=lambda: time(11, 30))
-    exit_time_utc:  time = field(default_factory=lambda: time(11, 55))
+    # Mirrored dynamically from config/settings.yaml (e.g. 17:00 IST -> 11:30 UTC)
+    entry_time_utc: time = field(default_factory=lambda: LIVE_ENTRY_TIME)
+    exit_time_utc:  time = field(default_factory=lambda: LIVE_EXIT_TIME)
 
     # Price lookup: search within ±N minutes of target time
     price_window_minutes: int = 5
 
     # ---- Position sizing --------------------------------------------------
-    lot_size: int = 150          # contracts per leg (call + put)
-    initial_capital: float = 1_000.0   # USD — for % return calculation
+    lot_size: int = LIVE_LOT_SIZE        # Dynamically mirrored from config/settings.yaml
+    initial_capital: float = 1_000.0     # USD — for % return calculation
 
     # ---- Stop-loss --------------------------------------------------------
-    # Exit when combined premium loss >= sl_pct % of entry premium
-    sl_pct: float = 50.0         # 50 %
+    sl_pct: float = LIVE_SL_PCT          # Dynamically mirrored from config/settings.yaml
+
+    # ---- Trading fees -----------------------------------------------------
+    # Deribit options fee: 0.03% of underlying value per contract per side
+    # Capped at 12.5% of option premium per option. Set 0 to disable.
+    fee_rate: float = 0.0003     # 0.03% of underlying
+
+    # ---- Slippage ---------------------------------------------------------
+    # % of option premium lost to slippage on each leg, each side.
+    # Entry: receive premium × (1 - slippage_pct/100)
+    # Exit:  pay    premium × (1 + slippage_pct/100)
+    slippage_pct: float = 0.0    # 0 % default (no slippage)
 
     # ---- Expiry filter ----------------------------------------------------
     # "same_day" → only options expiring on the trade date

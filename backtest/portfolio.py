@@ -3,16 +3,11 @@ backtest/portfolio.py
 =====================
 Aggregates TradeResult objects into portfolio-level statistics.
 
-Computes:
-  - Cumulative P&L and equity curve
-  - Max drawdown (absolute and %)
-  - Sharpe ratio (annualised, daily, risk-free = 0)
-  - Calmar ratio
-  - Profit factor
-  - Win rate, avg win, avg loss, best/worst trade
-  - Monthly P&L breakdown
-  - Day-of-week average P&L
-  - Per-trade log as a DataFrame
+Uses net_pnl_usd (gross P&L - fees - slippage) as the primary metric for all
+equity curve, drawdown, Sharpe, and Calmar calculations.
+
+Also provides slippage_sensitivity() which returns a DataFrame showing key
+metrics across a range of slippage assumptions without re-running the backtest.
 """
 
 from __future__ import annotations
@@ -55,7 +50,10 @@ class Portfolio:
                 "exit_call":     t.exit_call,
                 "exit_put":      t.exit_put,
                 "exit_premium":  t.exit_premium,
-                "pnl_usd":       t.pnl_usd,
+                "pnl_usd":       t.pnl_usd,       # gross (no fees/slippage)
+                "fee_usd":       t.fee_usd,
+                "slippage_usd":  t.slippage_usd,
+                "net_pnl_usd":   t.net_pnl_usd,   # primary metric
                 "exit_reason":   t.exit_reason,
                 "lot_size":      t.lot_size,
                 "sl_threshold":  t.sl_threshold,
@@ -67,17 +65,19 @@ class Portfolio:
         df.sort_values("date", inplace=True)
         df.reset_index(drop=True, inplace=True)
 
-        df["cumulative_pnl"] = df["pnl_usd"].cumsum()
+        # Equity curve uses NET P&L
+        df["cumulative_pnl"] = df["net_pnl_usd"].cumsum()
         df["equity"]         = self.cfg.initial_capital + df["cumulative_pnl"]
-        df["return_pct"]     = df["pnl_usd"] / self.cfg.initial_capital * 100.0
+        df["return_pct"]     = df["net_pnl_usd"] / self.cfg.initial_capital * 100.0
 
         self._df    = df
         self._stats = self._compute_stats(df)
 
-    def _compute_stats(self, df: pd.DataFrame) -> dict:
-        pnl    = df["pnl_usd"]
-        equity = df["equity"]
-        ret    = df["return_pct"]
+    def _compute_stats(self, df: pd.DataFrame, pnl_col: str = "net_pnl_usd") -> dict:
+        """Compute all statistics using the specified P&L column."""
+        pnl    = df[pnl_col]
+        equity = self.cfg.initial_capital + pnl.cumsum()
+        ret    = pnl / self.cfg.initial_capital * 100.0
 
         total_trades = len(df)
         winners = pnl[pnl > 0]
@@ -111,18 +111,26 @@ class Portfolio:
         # Exit reason breakdown
         exit_counts = df["exit_reason"].value_counts().to_dict()
 
-        # Monthly breakdown
-        df = df.copy()
-        df["ym"] = df["date"].dt.to_period("M")
-        monthly = df.groupby("ym")["pnl_usd"].sum()
+        # Monthly breakdown (on net P&L)
+        df2 = df.copy()
+        df2["ym"] = df2["date"].dt.to_period("M")
+        monthly = df2.groupby("ym")[pnl_col].sum()
 
         # Day-of-week breakdown
-        df["dow"] = df["date"].dt.day_name()
-        dow_pnl   = df.groupby("dow")["pnl_usd"].mean()
+        df2["dow"] = df2["date"].dt.day_name()
+        dow_pnl    = df2.groupby("dow")[pnl_col].mean()
+
+        # Fee and slippage totals
+        total_fee      = float(df["fee_usd"].sum())       if "fee_usd"      in df.columns else 0.0
+        total_slippage = float(df["slippage_usd"].sum())  if "slippage_usd" in df.columns else 0.0
+        gross_total    = float(df["pnl_usd"].sum())       if "pnl_usd"      in df.columns else float(pnl.sum())
 
         return {
             "total_trades":       total_trades,
-            "total_pnl_usd":      float(pnl.sum()),
+            "gross_pnl_usd":      gross_total,
+            "total_fee_usd":      total_fee,
+            "total_slippage_usd": total_slippage,
+            "total_pnl_usd":      float(pnl.sum()),       # net
             "total_return_pct":   total_return_pct,
             "avg_pnl_per_trade":  float(pnl.mean()),
             "win_count":          len(winners),
@@ -153,6 +161,71 @@ class Portfolio:
         }
 
     # ------------------------------------------------------------------
+    def slippage_sensitivity(
+        self,
+        slippage_levels: list[float] | None = None,
+    ) -> pd.DataFrame:
+        """
+        Compute key metrics at multiple slippage levels without re-running the backtest.
+
+        For each slippage level s (%), the adjusted net P&L per trade is:
+            net = gross_pnl - fee - (entry_premium + exit_premium) * s/100 * lot_size
+
+        Returns a DataFrame with one row per slippage level.
+        """
+        if slippage_levels is None:
+            slippage_levels = [0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
+
+        df = self._df.copy()
+        records = []
+
+        for s_pct in slippage_levels:
+            s = s_pct / 100.0
+            # Additional slippage cost vs base slippage already baked in
+            base_s = self.cfg.slippage_pct / 100.0
+            delta_s = s - base_s   # extra slippage on top of what's already calculated
+            extra_slip = (df["entry_premium"] + df["exit_premium"]) * delta_s * df["lot_size"]
+            adj_net = df["net_pnl_usd"] - extra_slip
+
+            equity   = self.cfg.initial_capital + adj_net.cumsum()
+            winners  = adj_net[adj_net > 0]
+            losers   = adj_net[adj_net < 0]
+            total    = float(adj_net.sum())
+            ret_pct  = adj_net / self.cfg.initial_capital * 100.0
+            daily_r  = ret_pct / 100.0
+
+            peak     = equity.cummax()
+            dd_pct   = float(((equity - peak) / peak).min() * 100)
+
+            sharpe   = (
+                daily_r.mean() / daily_r.std() * np.sqrt(252)
+                if daily_r.std() > 0 else 0.0
+            )
+            pf       = (
+                float(winners.sum()) / float(abs(losers.sum()))
+                if not losers.empty and losers.sum() != 0 else float("inf")
+            )
+            win_rate = len(winners) / len(adj_net) * 100 if len(adj_net) else 0
+
+            records.append({
+                "Slippage":      f"{s_pct:.1f}%",
+                "Net P&L":       f"${total:+,.0f}",
+                "Return %":      f"{ret_pct.sum():+.1f}%",
+                "Win Rate":      f"{win_rate:.1f}%",
+                "Profit Factor": f"{pf:.2f}",
+                "Sharpe":        f"{sharpe:.2f}",
+                "Max DD":        f"{dd_pct:.1f}%",
+                "Final Equity":  f"${self.cfg.initial_capital + total:,.0f}",
+                # Raw values for chart rendering
+                "_net_pnl":      total,
+                "_sharpe":       sharpe,
+                "_pf":           pf,
+                "_dd":           dd_pct,
+            })
+
+        return pd.DataFrame(records)
+
+    # ------------------------------------------------------------------
     @property
     def trade_df(self) -> pd.DataFrame:
         return self._df
@@ -163,21 +236,25 @@ class Portfolio:
 
     def print_summary(self) -> None:
         s   = self._stats
-        sep = "-" * 54
+        sep = "-" * 60
         lines = [
             "",
-            "=" * 54,
-            "   BTC SHORT STRADDLE BACKTEST - SUMMARY",
-            "=" * 54,
+            "=" * 60,
+            "   BTC SHORT STRADDLE BACKTEST - SUMMARY (NET of Fees)",
+            "=" * 60,
             f"   Period    : {self._df['date'].min().date()} -> {self._df['date'].max().date()}",
             f"   Capital   : ${s['initial_capital']:,.0f}",
             sep,
             f"   Trades    : {s['total_trades']}",
             f"   Win Rate  : {s['win_rate_pct']:.1f}%  ({s['win_count']}W / {s['loss_count']}L)",
-            f"   Total P&L : ${s['total_pnl_usd']:+,.2f}  ({s['total_return_pct']:+.2f}%)",
-            f"   Final Eq  : ${s['final_equity']:,.2f}",
             sep,
-            f"   Avg P&L/trade : ${s['avg_pnl_per_trade']:+.2f}",
+            f"   Gross P&L   : ${s['gross_pnl_usd']:+,.2f}",
+            f"   Total Fees  : ${s['total_fee_usd']:+,.2f}",
+            f"   Slippage    : ${s['total_slippage_usd']:+,.2f}",
+            f"   Net P&L     : ${s['total_pnl_usd']:+,.2f}  ({s['total_return_pct']:+.2f}%)",
+            f"   Final Eq    : ${s['final_equity']:,.2f}",
+            sep,
+            f"   Avg Net/trade : ${s['avg_pnl_per_trade']:+.2f}",
             f"   Avg Win       : ${s['avg_win_usd']:+.2f}",
             f"   Avg Loss      : ${s['avg_loss_usd']:+.2f}",
             f"   Max Win       : ${s['max_win_usd']:+.2f}",
@@ -191,7 +268,7 @@ class Portfolio:
             f"   Avg Entry Premium : ${s['avg_entry_premium']:.2f}",
             f"   Avg Hold Time     : {s['avg_hold_minutes']:.1f} min",
             f"   SL Hits / Time Ex : {s['sl_hit_count']} / {s['time_exit_count']}",
-            "=" * 54,
+            "=" * 60,
             "",
         ]
         print("\n".join(lines))
