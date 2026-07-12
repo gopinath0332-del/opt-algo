@@ -155,19 +155,6 @@ class ShortStraddleStrategy:
             except Exception:
                 pass
 
-        # Ignore trade if the premium difference of call and put is more than 50
-        prem_diff = abs(self.call_entry_premium - self.put_entry_premium)
-        if prem_diff > 50.0:
-            logger.warning(
-                f"Premium difference too high: |Call {self.call_entry_premium:.2f} - Put {self.put_entry_premium:.2f}| = {prem_diff:.2f} > 50. "
-                "Ignoring this trade."
-            )
-            self.notifier.send_error(
-                "Trade Ignored",
-                f"Ignored short straddle entry because premium difference was {prem_diff:.2f} (Call: {self.call_entry_premium:.2f}, Put: {self.put_entry_premium:.2f}), which exceeds maximum limit of 50."
-            )
-            return
-
         self.entry_premium = self.call_entry_premium + self.put_entry_premium
         self.sl_threshold = self.entry_premium * self.sl_pct
 
