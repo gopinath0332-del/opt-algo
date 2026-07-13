@@ -102,7 +102,7 @@ def run_strategy(config, logger):
         f"{'ENABLED' if config.enable_order_placement else 'DISABLED'}\u001b[0m\n"
         f"Lot Size: \u001b[0;36m{config.strategy.lot_size}\u001b[0m per leg\n"
         f"Leverage: \u001b[0;35m{config.strategy.leverage}x\u001b[0m\n"
-        f"SL: \u001b[0;33m{config.strategy.stop_loss.value}%\u001b[0m of premium\n"
+        f"SL: \u001b[0;33m{f'{config.strategy.stop_loss.value}% of premium' if config.strategy.stop_loss else 'None (Disabled)'}\u001b[0m\n"
         f"Entry: \u001b[0;36m{config.strategy.entry_time} IST\u001b[0m\n"
         f"Exit: \u001b[0;36m{config.strategy.exit_time} IST\u001b[0m\n"
         f"Time: {now.strftime('%Y-%m-%d %H:%M:%S IST')}"
@@ -167,6 +167,30 @@ def main():
             logger.info(
                 f"Scheduler active — waiting for {entry_time} IST daily. "
                 f"Press Ctrl+C to stop."
+            )
+
+            from notifications.manager import NotificationManager
+            notifier = NotificationManager(config)
+            
+            mode_str = "🟢 LIVE TRADING" if config.enable_order_placement else "🟡 PAPER TRADING"
+            sl_str = f"{config.strategy.stop_loss.value}% of premium" if config.strategy.stop_loss else "None (Disabled)"
+            startup_msg = (
+                f"```ansi\n"
+                f"Status: \u001b[{'1;32' if config.enable_order_placement else '1;33'}m{mode_str}\u001b[0m\n"
+                f"Strategy: \u001b[1;37m{config.strategy.name}\u001b[0m\n"
+                f"Underlying: \u001b[1;37m{config.strategy.underlying}\u001b[0m\n"
+                f"Scheduled Entry: \u001b[0;36m{entry_time} IST\u001b[0m\n"
+                f"Scheduled Exit: \u001b[0;36m{config.strategy.exit_time} IST\u001b[0m\n"
+                f"Stop Loss: \u001b[0;33m{sl_str}\u001b[0m\n"
+                f"System Time: \u001b[0;36m{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}\u001b[0m\n"
+                f"```\n"
+                f"*Service is online and waiting for the scheduled execution time.*"
+            )
+            
+            notifier.send_status_message(
+                "🔄 Options Bot Service Started/Restarted",
+                startup_msg,
+                color=3447003,  # Blue
             )
 
             while True:
