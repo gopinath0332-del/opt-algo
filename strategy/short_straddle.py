@@ -282,7 +282,7 @@ class ShortStraddleStrategy:
         logger.info(f"Calculated Entry Slippage: Call=${call_entry_slippage:.4f}, Put=${put_entry_slippage:.4f}, Total=${self.entry_slippage_usd:.4f} USD")
 
         self.entry_premium = self.call_entry_premium + self.put_entry_premium
-        self.sl_threshold = self.entry_premium * self.sl_pct
+        self.sl_threshold = self.entry_premium * self.sl_pct if self.sl_pct is not None else None
 
         # Send Discord entry notification
         self.notifier.send_entry_alert(
