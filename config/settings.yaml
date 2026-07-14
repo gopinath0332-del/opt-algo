@@ -8,7 +8,7 @@ strategy:
   entry_time: "17:00"         # IST — daily entry time
   exit_time: "17:30"          # IST — daily expiry / settlement time
   timezone: "Asia/Kolkata"    # IST
-  lot_size: 150               # Contracts per leg
+  capital_allocation_pct: 60   # % of available wallet balance to deploy per trade
   leverage: 200               # 200x leverage
   order_type: "market_order"  # Market orders for instant fill
 

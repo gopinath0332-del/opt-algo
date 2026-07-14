@@ -29,7 +29,8 @@ class StrategyConfig(BaseModel):
     entry_time: str = Field(default="17:00")
     exit_time: str = Field(default="17:25")
     timezone: str = Field(default="Asia/Kolkata")
-    lot_size: int = Field(default=250, gt=0)
+    lot_size: Optional[int] = Field(default=None, gt=0)           # Static lot size (overrides dynamic sizing if set)
+    capital_allocation_pct: float = Field(default=60.0, gt=0, le=100)  # % of balance to deploy per trade
     leverage: int = Field(default=200, gt=0)
     order_type: str = Field(default="market_order")
     stop_loss: Optional[StopLossConfig] = Field(default=None)

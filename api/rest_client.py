@@ -412,6 +412,37 @@ class DeltaRestClient:
         response = self._make_auth_request("GET", "/v2/wallet/balances")
         return cast(Dict[str, Any], response)
 
+    def get_available_balance(self) -> float:
+        """Get available USD/USDT balance from the wallet.
+
+        Parses the /v2/wallet/balances response and returns the available
+        balance for the USD asset. Falls back to searching for 'USDT' if
+        'USD' is not found.
+
+        Returns:
+            Available balance in USD, or 0.0 if it cannot be determined.
+        """
+        try:
+            response = self.get_wallet_balance()
+            balances = response.get("result", [])
+            if not isinstance(balances, list):
+                logger.warning("Unexpected wallet balance format", response=response)
+                return 0.0
+
+            # Try to find USD or USDT asset
+            for asset in balances:
+                symbol = str(asset.get("asset_symbol", "") or asset.get("asset", {}).get("symbol", "")).upper()
+                if symbol in ("USD", "USDT"):
+                    available = float(asset.get("available_balance", 0) or 0)
+                    logger.info(f"Wallet available balance ({symbol}): ${available:,.2f}")
+                    return available
+
+            logger.warning("USD/USDT asset not found in wallet balances")
+            return 0.0
+        except Exception as e:
+            logger.error(f"Failed to fetch available balance: {e}")
+            return 0.0
+
     def get_wallet_transactions(
         self,
         transaction_types: str,

@@ -44,7 +44,9 @@ class ShortStraddleStrategy:
 
         # Strategy parameters from config
         self.underlying = config.strategy.underlying
-        self.lot_size = config.strategy.lot_size
+        self.static_lot_size = config.strategy.lot_size           # None = use dynamic sizing
+        self.capital_allocation_pct = config.strategy.capital_allocation_pct / 100.0
+        self.lot_size: int = config.strategy.lot_size or 1        # Will be overridden dynamically at entry
         self.leverage = config.strategy.leverage
         self.sl_pct = config.strategy.stop_loss.value / 100.0 if config.strategy.stop_loss else None
         self.monitor_interval = config.strategy.monitor_interval_sec
@@ -159,6 +161,47 @@ class ShortStraddleStrategy:
         self.call_entry_mark = self.call_entry_premium
         self.put_entry_mark = self.put_entry_premium
         self.entry_slippage_usd = 0.0
+
+        # ---------------------------------------------------------------
+        # Dynamic lot size calculation
+        # ---------------------------------------------------------------
+        if self.static_lot_size is not None:
+            # Static override — use config value directly
+            self.lot_size = self.static_lot_size
+            logger.info(f"Using static lot size from config: {self.lot_size} lots per leg")
+        else:
+            # Dynamic sizing: allocate capital_allocation_pct % of available balance
+            # Sizing is based on total premium collected per lot (risk-exposure basis),
+            # NOT the leveraged margin — this keeps position size proportional to real risk.
+            #
+            #   premium_per_lot = (call_mark + put_mark) × contract_value   [USD collected per lot]
+            #   capital         = available_balance × capital_allocation_pct
+            #   lot_size        = floor(capital / premium_per_lot)
+            #
+            available_balance = self.client.get_available_balance()
+            if available_balance > 0 and self.entry_premium > 0 and self.contract_value > 0:
+                capital = available_balance * self.capital_allocation_pct
+                # Premium collected per lot (in USD) — reflects the actual risk per contract
+                premium_per_lot = self.entry_premium * self.contract_value
+                if premium_per_lot > 0:
+                    self.lot_size = max(1, int(capital / premium_per_lot))
+                    logger.info(
+                        f"Dynamic lot size calculation: "
+                        f"balance=${available_balance:,.2f}, "
+                        f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
+                        f"premium/lot=${premium_per_lot:.4f}, "
+                        f"lot_size={self.lot_size}"
+                    )
+                else:
+                    self.lot_size = 1
+                    logger.warning("Premium per lot is 0 — defaulting lot size to 1")
+            else:
+                self.lot_size = 1
+                logger.warning(
+                    f"Could not compute dynamic lot size "
+                    f"(balance=${available_balance:.2f}, premium=${self.entry_premium:.4f}) "
+                    f"— defaulting lot size to 1"
+                )
 
         if self.sl_pct is not None:
             self.sl_threshold = self.entry_premium * self.sl_pct

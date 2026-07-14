@@ -93,6 +93,11 @@ def run_strategy(config, logger):
     mode = config.get_mode()
     now = datetime.now(IST)
 
+    lot_size_str = (
+        f"{config.strategy.lot_size} (static)"
+        if config.strategy.lot_size
+        else f"Dynamic ({config.strategy.capital_allocation_pct:.0f}% of balance)"
+    )
     startup_msg = (
         f"Strategy: \u001b[1;37mShort Straddle\u001b[0m\n"
         f"Underlying: \u001b[1;37m{config.strategy.underlying}\u001b[0m\n"
@@ -100,7 +105,7 @@ def run_strategy(config, logger):
         f"Mode: \u001b[1;37m{mode}\u001b[0m\n"
         f"Order Placement: \u001b[{'1;32' if config.enable_order_placement else '0;31'}m"
         f"{'ENABLED' if config.enable_order_placement else 'DISABLED'}\u001b[0m\n"
-        f"Lot Size: \u001b[0;36m{config.strategy.lot_size}\u001b[0m per leg\n"
+        f"Lot Size: \u001b[0;36m{lot_size_str}\u001b[0m per leg\n"
         f"Leverage: \u001b[0;35m{config.strategy.leverage}x\u001b[0m\n"
         f"SL: \u001b[0;33m{f'{config.strategy.stop_loss.value}% of premium' if config.strategy.stop_loss else 'None (Disabled)'}\u001b[0m\n"
         f"Entry: \u001b[0;36m{config.strategy.entry_time} IST\u001b[0m\n"
