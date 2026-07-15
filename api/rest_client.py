@@ -592,6 +592,10 @@ class DeltaRestClient:
         """
         _ORDER_MAX_RETRIES: int = min(_MAX_RETRIES, 3)
         _ORDER_RETRY_DELAYS: list = [3.0, 10.0, 20.0]
+        # Delays used specifically when the exchange is in cancel-only mode.
+        # The disruption window is typically short (5–30s), so we wait longer
+        # between retries to give the exchange time to resume normal operation.
+        _MARKET_DISRUPTED_RETRY_DELAYS: list = [15.0, 30.0, 60.0]
         _RETRYABLE_KEYWORDS: tuple = (
             "timed out", "timeout", "connection", "read timed",
             "network", "connectionpool", "remotedisconnected",
@@ -642,6 +646,24 @@ class DeltaRestClient:
             except (APIError, Exception) as exc:
                 last_exception = exc
                 error_msg = str(exc).lower()
+
+                # market_disrupted_cancel_only_mode is a transient exchange state
+                # (settlement window, circuit breaker, etc.) — retry with longer delays.
+                if "market_disrupted_cancel_only_mode" in error_msg:
+                    if attempt >= _ORDER_MAX_RETRIES:
+                        logger.error(
+                            f"Order failed: exchange still in cancel-only mode after "
+                            f"{_ORDER_MAX_RETRIES + 1} attempts. Last error: {exc}"
+                        )
+                        break
+                    delay = _MARKET_DISRUPTED_RETRY_DELAYS[min(attempt, len(_MARKET_DISRUPTED_RETRY_DELAYS) - 1)]
+                    logger.warning(
+                        f"Exchange is in cancel-only mode (market_disrupted_cancel_only_mode). "
+                        f"Attempt {attempt + 1}/{_ORDER_MAX_RETRIES + 1}. "
+                        f"Waiting {delay:.0f}s for market to resume before retry..."
+                    )
+                    time.sleep(delay)
+                    continue
 
                 is_retryable = any(kw in error_msg for kw in _RETRYABLE_KEYWORDS)
                 if not is_retryable:

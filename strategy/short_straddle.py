@@ -273,8 +273,14 @@ class ShortStraddleStrategy:
             )
             logger.info(f"Call order placed: {call_order.get('id')}")
         except Exception as e:
+            err_str = str(e)
+            alert_title = (
+                "Market Disrupted — Call Order Failed"
+                if "market_disrupted_cancel_only_mode" in err_str.lower()
+                else "Call Order Failed"
+            )
             logger.error(f"Failed to place Call order: {e}")
-            self.notifier.send_error("Call Order Failed", str(e))
+            self.notifier.send_error(alert_title, err_str)
             return
 
         try:
@@ -287,8 +293,14 @@ class ShortStraddleStrategy:
             )
             logger.info(f"Put order placed: {put_order.get('id')}")
         except Exception as e:
+            err_str = str(e)
+            alert_title = (
+                "Market Disrupted — Put Order Failed"
+                if "market_disrupted_cancel_only_mode" in err_str.lower()
+                else "Put Order Failed"
+            )
             logger.error(f"Failed to place Put order: {e}")
-            self.notifier.send_error("Put Order Failed", str(e))
+            self.notifier.send_error(alert_title, err_str)
             # Close the call leg if put fails
             try:
                 self.client.close_position(self.call_product_id)
