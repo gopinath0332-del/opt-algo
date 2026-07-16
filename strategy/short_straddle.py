@@ -518,17 +518,25 @@ class ShortStraddleStrategy:
             logger.info("No open positions to close")
             return
 
-        # Get exit premiums before closing (will be overridden with actual fills if executed)
-        exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
-        exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
+        # Determine if we should hold to expiry (auto-settle) or place manual orders
+        let_settle = (reason == "scheduled_exit" and self.config.strategy.exit_time == "17:30")
 
-        exit_call_mark = exit_call_premium
-        exit_put_mark = exit_put_premium
+        # Get exit premiums before closing (will be overridden with actual fills or settlement intrinsic value)
+        exit_call_premium = 0.0
+        exit_put_premium = 0.0
+        exit_call_mark = 0.0
+        exit_put_mark = 0.0
+
+        if not let_settle:
+            exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
+            exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
+            exit_call_mark = exit_call_premium
+            exit_put_mark = exit_put_premium
 
         call_exit_order_id = None
         put_exit_order_id = None
 
-        if self.order_placement_enabled:
+        if self.order_placement_enabled and not let_settle:
             # Close call position
             try:
                 logger.info(f"Closing Call position: {self.call_symbol}")
@@ -568,12 +576,35 @@ class ShortStraddleStrategy:
                             logger.info(f"Actual Put exit fill price: ${exit_put_premium:.4f}")
                 except Exception as e:
                     logger.warning(f"Failed to fetch actual exit fill prices: {e}")
+        elif let_settle:
+            logger.info("Holding straddle to expiry (auto-settlement). No closing orders will be placed.")
+            try:
+                expiry_spot = self.client.get_spot_price(self.underlying)
+                if expiry_spot > 0:
+                    exit_call_premium = max(0.0, expiry_spot - self.atm_strike)
+                    exit_put_premium = max(0.0, self.atm_strike - expiry_spot)
+                    logger.info(
+                        f"Auto-settlement settlement values: spot=${expiry_spot:,.2f}, Strike={self.atm_strike:.0f} -> "
+                        f"Call Settlement=${exit_call_premium:.4f}, Put Settlement=${exit_put_premium:.4f}"
+                    )
+                else:
+                    raise ValueError("Spot price returned 0")
+            except Exception as e:
+                logger.warning(f"Failed to calculate settlement intrinsic values: {e}. Falling back to mark prices.")
+                exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
+                exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
         else:
             logger.warning("[DISABLED] Order placement disabled — simulating exit")
 
-        # Calculate exit slippage: (Fill - Mark) since we buy back options
-        call_exit_slippage = exit_call_premium - exit_call_mark
-        put_exit_slippage = exit_put_premium - exit_put_mark
+        # Calculate exit slippage: (Fill - Mark) since we buy back options.
+        # Auto-settled positions have 0.0 slippage on exit.
+        if let_settle:
+            call_exit_slippage = 0.0
+            put_exit_slippage = 0.0
+        else:
+            call_exit_slippage = exit_call_premium - exit_call_mark
+            put_exit_slippage = exit_put_premium - exit_put_mark
+
         exit_slippage_usd = (call_exit_slippage + put_exit_slippage) * self.lot_size * self.contract_value
         total_slippage_usd = self.entry_slippage_usd + exit_slippage_usd
 
@@ -590,8 +621,9 @@ class ShortStraddleStrategy:
         trading_fees = 0.0
         if self.order_placement_enabled and self.mode != "paper":
             try:
-                logger.info("Waiting 3 seconds for exchange ledger to update commission logs...")
-                time.sleep(3)
+                sleep_sec = 10 if let_settle else 3
+                logger.info(f"Waiting {sleep_sec} seconds for exchange ledger to update commission logs...")
+                time.sleep(sleep_sec)
                 now_us = int(time.time() * 1_000_000)
                 # Query from entry minus 60s up to now
                 start_us = self.entry_time_us - (60 * 1_000_000)
@@ -618,11 +650,25 @@ class ShortStraddleStrategy:
 
         # Fallback to simulated fees if live ledger query was skipped/failed
         if trading_fees is None or self.mode == "paper":
-            # Taker fee is typically 0.03% of notional on entry and exit
-            entry_notional = self.entry_premium * self.lot_size * self.contract_value
-            exit_notional = exit_total * self.lot_size * self.contract_value
-            trading_fees = (entry_notional + exit_notional) * 0.0003
-            logger.info(f"Simulated trading fees (0.03% taker rate): ${trading_fees:.4f}")
+            if let_settle:
+                # Entry fees: taker rate of 0.03% on entry underlying notional value
+                entry_fee = 2 * self.lot_size * self.contract_value * 0.0003 * self.spot_price
+                # Settlement fees for ITM leg: 0.01% of spot, capped at 10% of payout
+                settle_fee_rate = 0.0001
+                raw_settle_fee = self.lot_size * self.contract_value * settle_fee_rate * self.spot_price
+                settle_cap = 0.10 * exit_total * self.lot_size * self.contract_value
+                settle_fee = min(raw_settle_fee, settle_cap)
+                trading_fees = entry_fee + settle_fee
+                logger.info(
+                    f"Simulated Hold to Expiry fees: Entry=${entry_fee:.4f}, "
+                    f"Settle=${settle_fee:.4f}, Total=${trading_fees:.4f}"
+                )
+            else:
+                # Closed early (e.g. SL hit): taker fee is typically 0.03% of notional on entry and exit
+                entry_notional = self.entry_premium * self.lot_size * self.contract_value
+                exit_notional = exit_total * self.lot_size * self.contract_value
+                trading_fees = (entry_notional + exit_notional) * 0.0003
+                logger.info(f"Simulated trading fees (0.03% taker rate): ${trading_fees:.4f}")
 
         logger.info(
             f"Exit complete — "
