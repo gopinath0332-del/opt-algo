@@ -171,36 +171,50 @@ class ShortStraddleStrategy:
             logger.info(f"Using static lot size from config: {self.lot_size} lots per leg")
         else:
             # Dynamic sizing: allocate capital_allocation_pct % of available balance
-            # Sizing is based on total premium collected per lot (risk-exposure basis),
-            # NOT the leveraged margin — this keeps position size proportional to real risk.
             #
-            #   premium_per_lot = (call_mark + put_mark) × contract_value   [USD collected per lot]
-            #   capital         = available_balance × capital_allocation_pct
-            #   lot_size        = floor(capital / premium_per_lot)
+            # IMPORTANT: sizing MUST be based on the isolated MARGIN required per lot,
+            # NOT the premium collected. Delta Exchange holds margin based on notional,
+            # not on the premium, so using premium leads to over-sizing and
+            # "insufficient_margin" errors.
+            #
+            # For each leg (call + put) the exchange requires:
+            #   margin_per_leg = (spot_price × contract_value) / leverage
+            #
+            # For a straddle (2 legs):
+            #   total_margin_per_lot = 2 × margin_per_leg
+            #
+            # Lot size derivation:
+            #   capital               = available_balance × capital_allocation_pct
+            #   lot_size              = floor(capital / total_margin_per_lot)
             #
             available_balance = self.client.get_available_balance()
-            if available_balance > 0 and self.entry_premium > 0 and self.contract_value > 0:
+            if available_balance > 0 and self.spot_price > 0 and self.contract_value > 0 and self.leverage > 0:
                 capital = available_balance * self.capital_allocation_pct
-                # Premium collected per lot (in USD) — reflects the actual risk per contract
-                premium_per_lot = self.entry_premium * self.contract_value
-                if premium_per_lot > 0:
-                    self.lot_size = max(1, int(capital / premium_per_lot))
+                # Margin required per lot per leg (USD), then × 2 for both legs
+                margin_per_leg = (self.spot_price * self.contract_value) / self.leverage
+                total_margin_per_lot = 2 * margin_per_leg
+                if total_margin_per_lot > 0:
+                    self.lot_size = max(1, int(capital / total_margin_per_lot))
                     logger.info(
-                        f"Dynamic lot size calculation: "
+                        f"Dynamic lot size calculation (margin-based): "
                         f"balance=${available_balance:,.2f}, "
                         f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
-                        f"premium/lot=${premium_per_lot:.4f}, "
+                        f"spot=${self.spot_price:,.2f}, "
+                        f"contract_value={self.contract_value}, "
+                        f"leverage={self.leverage}x, "
+                        f"margin/leg=${margin_per_leg:.4f}, "
+                        f"total_margin/lot=${total_margin_per_lot:.4f}, "
                         f"lot_size={self.lot_size}"
                     )
                 else:
                     self.lot_size = 1
-                    logger.warning("Premium per lot is 0 — defaulting lot size to 1")
+                    logger.warning("Margin per lot is 0 — defaulting lot size to 1")
             else:
                 self.lot_size = 1
                 logger.warning(
                     f"Could not compute dynamic lot size "
-                    f"(balance=${available_balance:.2f}, premium=${self.entry_premium:.4f}) "
-                    f"— defaulting lot size to 1"
+                    f"(balance=${available_balance:.2f}, spot=${self.spot_price:.2f}, "
+                    f"contract_value={self.contract_value}) — defaulting lot size to 1"
                 )
 
         if self.sl_pct is not None:
