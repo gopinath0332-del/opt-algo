@@ -386,16 +386,27 @@ class ReportGenerator:
             </div>
             """
 
-        # Trade log (newest 100) — show gross + fee + net, call/put split
-        show = df.sort_values("date", ascending=False).head(100)
+        # Trade log (ALL trades) — show gross + fee + net, call/put split, lot size, margin, equity, cum pnl
+        show = df.sort_values("date", ascending=False)
         rows = ""
+        contract_value = self.cfg.contract_value
+        margin_pct = self.cfg.option_margin_requirement_pct
         for _, r in show.iterrows():
             net = r.get("net_pnl_usd", r["pnl_usd"])
             col = "#26a69a" if net >= 0 else "#ef5350"
+            lot = int(r.get("lot_size", self.cfg.lot_size))
+            spot = r.get("spot_estimate", r["atm_strike"])
+            margin_used = 2 * spot * contract_value * (margin_pct / 100.0) * lot if spot else 0.0
+            equity = r.get("equity", self.cfg.initial_capital)
+            cum_pnl = r.get("cumulative_pnl", 0.0)
             rows += (
                 f"<tr data-exit-reason='{r['exit_reason']}'>"
                 f"<td>{pd.Timestamp(r['date']).date()}</td>"
                 f"<td>{int(r['atm_strike']):,}</td>"
+                f"<td>{lot:,}</td>"
+                f"<td style='color:#ab47bc'>${margin_used:,.2f}</td>"
+                f"<td style='font-weight:600'>${equity:,.2f}</td>"
+                f"<td style='color:{_c(cum_pnl)}'>${cum_pnl:+,.2f}</td>"
                 # Entry: call + put
                 f"<td>${r['entry_call']:.2f}</td>"
                 f"<td>${r['entry_put']:.2f}</td>"
@@ -434,7 +445,7 @@ class ReportGenerator:
     <h1>&#9889; BTC Short Straddle Backtest</h1>
     <div class="meta">
       Period: {period} &nbsp;|&nbsp; Capital: ${self.cfg.initial_capital:,.0f}
-      &nbsp;|&nbsp; Lot Size: {self.cfg.lot_size} &nbsp;|&nbsp;
+      &nbsp;|&nbsp; Lot Size: {f"Dynamic ({self.cfg.capital_allocation_pct:.0f}% of equity, {self.cfg.option_margin_requirement_pct:.0f}% margin, cap {self.cfg.max_lot_size:,})" if self.cfg.use_dynamic_lot_size else f"{self.cfg.lot_size} contracts"} &nbsp;|&nbsp;
       SL: {sl_display} &nbsp;|&nbsp;
       {fee_info} &nbsp;|&nbsp; {slip_info}
       &nbsp;|&nbsp; Generated: {gen} UTC
@@ -447,20 +458,28 @@ class ReportGenerator:
   {charts}
   <div class="section">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px">
-      <div class="section-title" style="margin-bottom:0">Trade Log (Latest 100)</div>
-      <div style="font-size:0.85rem; display:flex; align-items:center; gap:8px">
+      <div class="section-title" style="margin-bottom:0">Trade Log (All {len(show)} Trades)</div>
+      <div style="font-size:0.85rem; display:flex; align-items:center; gap:12px">
         <span style="color:#7986a0">Filter Exit Reason:</span>
-        <select id="exit-reason-filter" onchange="filterTrades()" style="background:#13192e; color:#e0e6f0; border:1px solid rgba(255,255,255,0.15); padding:6px 12px; border-radius:6px; outline:none; cursor:pointer; font-size:0.8rem">
+        <select id="exit-reason-filter" onchange="filterAndPaginate()" style="background:#13192e; color:#e0e6f0; border:1px solid rgba(255,255,255,0.15); padding:6px 12px; border-radius:6px; outline:none; cursor:pointer; font-size:0.8rem">
           <option value="all">All Exits</option>
           <option value="sl_hit">SL Hit Only</option>
           <option value="time_exit">Time Exit Only</option>
         </select>
+        <span style="color:#7986a0">Per page:</span>
+        <select id="page-size-select" onchange="filterAndPaginate()" style="background:#13192e; color:#e0e6f0; border:1px solid rgba(255,255,255,0.15); padding:6px 12px; border-radius:6px; outline:none; cursor:pointer; font-size:0.8rem">
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+          <option value="99999">All</option>
+        </select>
       </div>
     </div>
+    <div id="pagination-controls" style="display:flex; justify-content:center; align-items:center; gap:10px; margin-bottom:12px; font-size:0.85rem"></div>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
-          <th>Date</th><th>ATM Strike</th>
+          <th>Date</th><th>ATM Strike</th><th>Lot Size</th><th>Margin Used</th><th>Account Equity</th><th>Cum. P&amp;L</th>
           <th>Entry Call</th><th>Entry Put</th><th>Entry Total</th>
           <th>Exit Call</th><th>Exit Put</th><th>Exit Total</th>
           <th>Gross P&amp;L</th><th>Fee</th><th>Slippage</th>
@@ -469,24 +488,79 @@ class ReportGenerator:
         <tbody id="trade-log-body">{rows}</tbody>
       </table>
     </div>
+    <div id="pagination-controls-bottom" style="display:flex; justify-content:center; align-items:center; gap:10px; margin-top:12px; font-size:0.85rem"></div>
   </div>
   <div class="footer">BTC Short Straddle Backtest &middot; opt-algo &middot; {gen}</div>
 </div>
 <script>
-function filterTrades() {{
+let currentPage = 1;
+let filteredRows = [];
+
+function getVisibleRows() {{
   const val = document.getElementById('exit-reason-filter').value;
-  const rows = document.querySelectorAll('#trade-log-body tr');
-  rows.forEach(row => {{
+  const allRows = Array.from(document.querySelectorAll('#trade-log-body tr'));
+  return allRows.filter(row => {{
     const reason = row.getAttribute('data-exit-reason');
-    if (val === 'all') {{
-      row.style.display = '';
-    }} else if (val === 'sl_hit') {{
-      row.style.display = (reason === 'sl_hit') ? '' : 'none';
-    }} else if (val === 'time_exit') {{
-      row.style.display = (reason === 'time_exit' || reason === 'time_exit_fallback') ? '' : 'none';
-    }}
+    if (val === 'all') return true;
+    if (val === 'sl_hit') return reason === 'sl_hit';
+    if (val === 'time_exit') return reason === 'time_exit' || reason === 'time_exit_fallback';
+    return true;
   }});
 }}
+
+function filterAndPaginate() {{
+  currentPage = 1;
+  filteredRows = getVisibleRows();
+  renderPage();
+}}
+
+function goToPage(p) {{
+  currentPage = p;
+  renderPage();
+}}
+
+function renderPage() {{
+  const pageSize = parseInt(document.getElementById('page-size-select').value);
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  if (currentPage > totalPages) currentPage = totalPages;
+
+  // Hide all rows first
+  const allRows = document.querySelectorAll('#trade-log-body tr');
+  allRows.forEach(r => r.style.display = 'none');
+
+  // Show only this page's filtered rows
+  const start = (currentPage - 1) * pageSize;
+  const end = Math.min(start + pageSize, filteredRows.length);
+  for (let i = start; i < end; i++) {{
+    filteredRows[i].style.display = '';
+  }}
+
+  // Build pagination controls
+  const info = `Showing ${{start+1}}-${{end}} of ${{filteredRows.length}} trades`;
+  let btns = `<span style="color:#7986a0">${{info}}</span>`;
+  if (totalPages > 1) {{
+    btns += `<button onclick="goToPage(1)" ${{currentPage===1?'disabled':''}} style="${{pgBtnStyle}}">&#171; First</button>`;
+    btns += `<button onclick="goToPage(${{currentPage-1}})" ${{currentPage===1?'disabled':''}} style="${{pgBtnStyle}}">&lsaquo; Prev</button>`;
+    // Show page numbers around current
+    const lo = Math.max(1, currentPage - 3);
+    const hi = Math.min(totalPages, currentPage + 3);
+    for (let p = lo; p <= hi; p++) {{
+      const active = p === currentPage ? 'background:#42a5f5;color:#fff;' : '';
+      btns += `<button onclick="goToPage(${{p}})" style="${{pgBtnStyle}}${{active}}">${{p}}</button>`;
+    }}
+    btns += `<button onclick="goToPage(${{currentPage+1}})" ${{currentPage===totalPages?'disabled':''}} style="${{pgBtnStyle}}">Next &rsaquo;</button>`;
+    btns += `<button onclick="goToPage(${{totalPages}})" ${{currentPage===totalPages?'disabled':''}} style="${{pgBtnStyle}}">Last &#187;</button>`;
+  }}
+  document.getElementById('pagination-controls').innerHTML = btns;
+  document.getElementById('pagination-controls-bottom').innerHTML = btns;
+}}
+
+const pgBtnStyle = 'background:#1a2240;color:#90caf9;border:1px solid rgba(255,255,255,0.15);padding:5px 10px;border-radius:5px;cursor:pointer;font-size:0.78rem;';
+
+// Initialize on load
+document.addEventListener('DOMContentLoaded', function() {{
+  filterAndPaginate();
+}});
 </script>
 </body>
 </html>"""

@@ -53,6 +53,7 @@ LIVE_EXIT_TIME          = _parse_time_utc(_strat.get("exit_time",  "17:25"), _st
 LIVE_LOT_SIZE           = _strat.get("lot_size", None)          # None = dynamic in live bot
 LIVE_CAPITAL_ALLOC_PCT  = float(_strat.get("capital_allocation_pct", 60))
 LIVE_LEVERAGE           = float(_strat.get("leverage", 200))
+LIVE_OPTION_MARGIN_PCT  = float(_strat.get("option_margin_requirement_pct", 10.0))
 _sl_conf = _strat.get("stop_loss")
 if isinstance(_sl_conf, dict):
     LIVE_SL_PCT = float(_sl_conf.get("value", 9999.0))
@@ -81,7 +82,7 @@ class BacktestConfig:
     # using the same margin-based formula as the live bot:
     #
     #   lot_size = floor(equity × capital_allocation_pct% / total_margin_per_lot)
-    #   total_margin_per_lot = 2 × (spot × contract_value) / leverage
+    #   total_margin_per_lot = 2 × spot × contract_value × option_margin_requirement_pct / 100
     #
     # max_lot_size caps the computed value to prevent runaway compounding
     # (exchange liquidity / account limits make unlimited scaling unrealistic).
@@ -91,6 +92,7 @@ class BacktestConfig:
     use_dynamic_lot_size:    bool  = True
     capital_allocation_pct:  float = field(default_factory=lambda: LIVE_CAPITAL_ALLOC_PCT)
     leverage:                float = field(default_factory=lambda: LIVE_LEVERAGE)
+    option_margin_requirement_pct: float = field(default_factory=lambda: LIVE_OPTION_MARGIN_PCT)
     max_lot_size:            int   = 10_000        # hard cap per leg (0 = no cap)
     lot_size:                int   = field(default_factory=lambda: int(LIVE_LOT_SIZE) if LIVE_LOT_SIZE else 150)
     contract_value:          float = 0.001         # BTC contract size multiplier

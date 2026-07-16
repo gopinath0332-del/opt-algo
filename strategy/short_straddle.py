@@ -48,6 +48,7 @@ class ShortStraddleStrategy:
         self.capital_allocation_pct = config.strategy.capital_allocation_pct / 100.0
         self.lot_size: int = config.strategy.lot_size or 1        # Will be overridden dynamically at entry
         self.leverage = config.strategy.leverage
+        self.option_margin_requirement_pct = config.strategy.option_margin_requirement_pct / 100.0
         self.sl_pct = config.strategy.stop_loss.value / 100.0 if config.strategy.stop_loss else None
         self.monitor_interval = config.strategy.monitor_interval_sec
         self.order_type = config.strategy.order_type
@@ -178,7 +179,7 @@ class ShortStraddleStrategy:
             # "insufficient_margin" errors.
             #
             # For each leg (call + put) the exchange requires:
-            #   margin_per_leg = (spot_price × contract_value) / leverage
+            #   margin_per_leg = spot_price × contract_value × option_margin_requirement_pct
             #
             # For a straddle (2 legs):
             #   total_margin_per_lot = 2 × margin_per_leg
@@ -188,10 +189,10 @@ class ShortStraddleStrategy:
             #   lot_size              = floor(capital / total_margin_per_lot)
             #
             available_balance = self.client.get_available_balance()
-            if available_balance > 0 and self.spot_price > 0 and self.contract_value > 0 and self.leverage > 0:
+            if available_balance > 0 and self.spot_price > 0 and self.contract_value > 0:
                 capital = available_balance * self.capital_allocation_pct
                 # Margin required per lot per leg (USD), then × 2 for both legs
-                margin_per_leg = (self.spot_price * self.contract_value) / self.leverage
+                margin_per_leg = self.spot_price * self.contract_value * self.option_margin_requirement_pct
                 total_margin_per_lot = 2 * margin_per_leg
                 if total_margin_per_lot > 0:
                     self.lot_size = max(1, int(capital / total_margin_per_lot))
@@ -201,7 +202,7 @@ class ShortStraddleStrategy:
                         f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
                         f"spot=${self.spot_price:,.2f}, "
                         f"contract_value={self.contract_value}, "
-                        f"leverage={self.leverage}x, "
+                        f"margin_pct={self.option_margin_requirement_pct*100:.1f}%, "
                         f"margin/leg=${margin_per_leg:.4f}, "
                         f"total_margin/lot=${total_margin_per_lot:.4f}, "
                         f"lot_size={self.lot_size}"
@@ -260,18 +261,19 @@ class ShortStraddleStrategy:
         # Record start time for transaction queries
         self.entry_time_us = int(time.time() * 1_000_000)
 
-        # Set leverage on both option products
-        try:
-            self.client.set_leverage(self.call_product_id, str(self.leverage))
-            logger.info(f"Leverage set to {self.leverage}x for Call {self.call_symbol}")
-        except Exception as e:
-            logger.warning(f"Failed to set leverage for Call: {e}")
+        # Set leverage on both option products if configured
+        if self.leverage:
+            try:
+                self.client.set_leverage(self.call_product_id, str(self.leverage))
+                logger.info(f"Leverage set to {self.leverage}x for Call {self.call_symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to set leverage for Call: {e}")
 
-        try:
-            self.client.set_leverage(self.put_product_id, str(self.leverage))
-            logger.info(f"Leverage set to {self.leverage}x for Put {self.put_symbol}")
-        except Exception as e:
-            logger.warning(f"Failed to set leverage for Put: {e}")
+            try:
+                self.client.set_leverage(self.put_product_id, str(self.leverage))
+                logger.info(f"Leverage set to {self.leverage}x for Put {self.put_symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to set leverage for Put: {e}")
 
         # Place SELL orders (short straddle)
         call_order = None

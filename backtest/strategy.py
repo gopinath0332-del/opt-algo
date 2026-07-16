@@ -136,7 +136,7 @@ class ShortStraddleEngine:
         """
         Compute per-day lot size using the same margin-based formula as the live bot.
 
-            lot_size = floor(equity × alloc_pct / (2 × spot × contract_value / leverage))
+            lot_size = floor(equity × alloc_pct / (2 × spot × contract_value × margin_pct / 100))
 
         Capped at cfg.max_lot_size to prevent unrealistic compounding blow-up.
         Falls back to cfg.lot_size when dynamic sizing is disabled or inputs are invalid.
@@ -145,7 +145,8 @@ class ShortStraddleEngine:
             return self.cfg.lot_size
         try:
             capital          = self._equity * (self.cfg.capital_allocation_pct / 100.0)
-            margin_per_lot   = 2 * spot * self.cfg.contract_value / self.cfg.leverage
+            margin_per_leg   = spot * self.cfg.contract_value * (self.cfg.option_margin_requirement_pct / 100.0)
+            margin_per_lot   = 2 * margin_per_leg
             if margin_per_lot <= 0:
                 return self.cfg.lot_size
             computed = max(1, int(capital / margin_per_lot))
