@@ -49,6 +49,7 @@ class ShortStraddleStrategy:
         self.lot_size: int = config.strategy.lot_size or 1        # Will be overridden dynamically at entry
         self.leverage = config.strategy.leverage
         self.option_margin_requirement_pct = config.strategy.option_margin_requirement_pct / 100.0
+        self.skip_weekends = config.strategy.skip_weekends
         self.sl_pct = config.strategy.stop_loss.value / 100.0 if config.strategy.stop_loss else None
         self.monitor_interval = config.strategy.monitor_interval_sec
         self.order_type = config.strategy.order_type
@@ -86,6 +87,16 @@ class ShortStraddleStrategy:
             time=now.strftime("%Y-%m-%d %H:%M:%S IST"),
             order_placement=self.order_placement_enabled,
         )
+
+        # Check weekend filter
+        if self.skip_weekends and now.weekday() in (5, 6):
+            logger.info(f"Today is {now.strftime('%A')} (weekend). Skipping trade execution per configuration.")
+            self.notifier.send_status_message(
+                f"ℹ️ Weekend Skip — {self.underlying}",
+                f"Today is {now.strftime('%A')} ({now.strftime('%Y-%m-%d')}). "
+                f"Strategy is configured to skip weekend trading."
+            )
+            return
 
         try:
             # Step 1: Entry

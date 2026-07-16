@@ -11,6 +11,7 @@ strategy:
   capital_allocation_pct: 80   # % of available wallet balance to deploy per trade
   option_margin_requirement_pct: 10.0 # 10% of underlying notional required as margin per contract leg
   order_type: "market_order"  # Market orders for instant fill
+  skip_weekends: true         # Skip trading on Saturdays and Sundays (UTC/IST)
 
   # Combined Stop-Loss Configuration
   stop_loss: null

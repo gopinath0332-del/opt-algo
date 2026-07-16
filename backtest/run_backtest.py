@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sl-pct",   type=float, default=LIVE_SL_PCT)
     p.add_argument("--capital",  type=float, default=1_000.0)
     p.add_argument("--verbose",  action="store_true")
+    p.add_argument("--skip-weekends", action="store_true", help="Skip trades on Saturday and Sunday")
     return p.parse_args()
 
 
@@ -104,6 +105,9 @@ def main() -> None:
 
     for trade_date, day_df in iter_trading_days(cfg):
         day_count += 1
+        if args.skip_weekends and trade_date.weekday() in (5, 6):
+            engine._skip(trade_date, "weekend trade (Saturday/Sunday)")
+            continue
         engine.run_day(trade_date, day_df)
 
     log.info("-" * 60)
