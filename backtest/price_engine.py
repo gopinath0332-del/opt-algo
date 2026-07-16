@@ -140,6 +140,48 @@ def get_straddle_price(
     return c, p
 
 
+STRIKE_STEP = 200.0  # BTC options on Delta Exchange use $200 strike increments
+
+
+def find_otm_strikes(
+    day_df: pd.DataFrame,
+    atm_strike: float,
+    otm_steps: int,
+    strike_step: float = STRIKE_STEP,
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Return (call_strike, put_strike) that are `otm_steps` increments away from ATM.
+
+    call_strike = atm_strike + otm_steps * strike_step
+    put_strike  = atm_strike - otm_steps * strike_step
+
+    Returns None for a leg if that strike has no data in day_df.
+    """
+    call_strike = atm_strike + otm_steps * strike_step
+    put_strike  = atm_strike - otm_steps * strike_step
+
+    # Verify the strikes actually exist in today's data
+    has_call = ((day_df["opt_type"] == "C") & (day_df["strike"] == call_strike)).any()
+    has_put  = ((day_df["opt_type"] == "P") & (day_df["strike"] == put_strike)).any()
+
+    return (call_strike if has_call else None,
+            put_strike  if has_put  else None)
+
+
+def get_strangle_price(
+    day_df: pd.DataFrame,
+    call_strike: float,
+    put_strike: float,
+    trade_date: date,
+    target_time: time,
+    window_minutes: int = 5,
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (call_price, put_price) VWAP for asymmetric call/put strikes."""
+    c = get_price_at_time(day_df, "C", call_strike, trade_date, target_time, window_minutes)
+    p = get_price_at_time(day_df, "P", put_strike,  trade_date, target_time, window_minutes)
+    return c, p
+
+
 def get_tick_prices_after_entry(
     day_df: pd.DataFrame,
     call_strike: float,

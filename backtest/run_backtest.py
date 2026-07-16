@@ -92,7 +92,9 @@ def main() -> None:
     log.info("  BTC Short Straddle Backtest")
     log.info("  Period    : %s -> %s", cfg.start_month, cfg.end_month)
     log.info("  Capital   : $%s", f"{cfg.initial_capital:,.0f}")
-    log.info("  Lot size  : %d contracts/leg", cfg.lot_size)
+    log.info("  Lot size  : %s",
+             f"Dynamic ({cfg.capital_allocation_pct:.0f}% of equity, {cfg.leverage:.0f}x leverage)"
+             if cfg.use_dynamic_lot_size else f"{cfg.lot_size} contracts/leg (static)")
     log.info("  SL        : %.0f%% of entry premium", cfg.sl_pct)
     log.info("  Entry/Exit: %s / %s UTC", cfg.entry_time_utc, cfg.exit_time_utc)
     log.info("=" * 60)

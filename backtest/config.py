@@ -48,9 +48,11 @@ def _parse_time_utc(time_str: str, tz_name: str) -> time:
 _settings = _load_live_settings()
 _strat = _settings.get("strategy", {})
 
-LIVE_ENTRY_TIME = _parse_time_utc(_strat.get("entry_time", "17:00"), _strat.get("timezone", "Asia/Kolkata"))
-LIVE_EXIT_TIME  = _parse_time_utc(_strat.get("exit_time", "17:25"), _strat.get("timezone", "Asia/Kolkata"))
-LIVE_LOT_SIZE   = int(_strat.get("lot_size", 150))
+LIVE_ENTRY_TIME         = _parse_time_utc(_strat.get("entry_time", "17:00"), _strat.get("timezone", "Asia/Kolkata"))
+LIVE_EXIT_TIME          = _parse_time_utc(_strat.get("exit_time",  "17:25"), _strat.get("timezone", "Asia/Kolkata"))
+LIVE_LOT_SIZE           = _strat.get("lot_size", None)          # None = dynamic in live bot
+LIVE_CAPITAL_ALLOC_PCT  = float(_strat.get("capital_allocation_pct", 60))
+LIVE_LEVERAGE           = float(_strat.get("leverage", 200))
 _sl_conf = _strat.get("stop_loss")
 if isinstance(_sl_conf, dict):
     LIVE_SL_PCT = float(_sl_conf.get("value", 9999.0))
@@ -75,9 +77,24 @@ class BacktestConfig:
     price_window_minutes: int = 5
 
     # ---- Position sizing --------------------------------------------------
-    lot_size: int = LIVE_LOT_SIZE        # Dynamically mirrored from config/settings.yaml
-    contract_value: float = 0.001        # BTC contract size multiplier (0.001 for BTC)
-    initial_capital: float = 1_000.0     # USD — for % return calculation
+    # When use_dynamic_lot_size=True (default), lot_size is computed per-day
+    # using the same margin-based formula as the live bot:
+    #
+    #   lot_size = floor(equity × capital_allocation_pct% / total_margin_per_lot)
+    #   total_margin_per_lot = 2 × (spot × contract_value) / leverage
+    #
+    # max_lot_size caps the computed value to prevent runaway compounding
+    # (exchange liquidity / account limits make unlimited scaling unrealistic).
+    # Set to 0 to disable the cap.
+    #
+    # lot_size below is only used when use_dynamic_lot_size=False.
+    use_dynamic_lot_size:    bool  = True
+    capital_allocation_pct:  float = field(default_factory=lambda: LIVE_CAPITAL_ALLOC_PCT)
+    leverage:                float = field(default_factory=lambda: LIVE_LEVERAGE)
+    max_lot_size:            int   = 10_000        # hard cap per leg (0 = no cap)
+    lot_size:                int   = field(default_factory=lambda: int(LIVE_LOT_SIZE) if LIVE_LOT_SIZE else 150)
+    contract_value:          float = 0.001         # BTC contract size multiplier
+    initial_capital:         float = 1_000.0       # USD — starting equity
 
     # ---- Stop-loss --------------------------------------------------------
     sl_pct: float = LIVE_SL_PCT          # Dynamically mirrored from config/settings.yaml
@@ -104,6 +121,11 @@ class BacktestConfig:
     # ---- Strike selection -------------------------------------------------
     # "parity" → pick strike where |call_price - put_price| is minimised
     strike_selection: str = "parity"
+
+    # OTM strangle: number of $200 strike steps away from ATM for each leg.
+    # 0  = ATM straddle (default, backward compatible)
+    # 10 = 10th OTM strike ($2,000 away from spot for both call and put)
+    otm_steps: int = 0
 
     # ---- Reporting --------------------------------------------------------
     report_dir: Path = field(default_factory=lambda: REPORTS_DIR)
