@@ -67,7 +67,7 @@ class DiscordNotifier:
         put_premium: float,
         total_premium: float,
         lot_size: int,
-        leverage: int,
+        account_balance: Optional[float],
         sl_threshold: float,
         mode: str = "live",
         entry_slippage_usd: Optional[float] = None,
@@ -91,7 +91,7 @@ class DiscordNotifier:
             f"\n"
             f"Total Premium: \u001b[0;32m${self._f(total_premium)}\u001b[0m\n"
             f"Lot Size: \u001b[0;36m{lot_size}\u001b[0m per leg\n"
-            f"Leverage: \u001b[0;35m{leverage}x\u001b[0m\n"
+            f"Account Balance: \u001b[0;35m${self._f(account_balance, 2) if account_balance is not None else 'N/A'}\u001b[0m\n"
             f"Combined SL: \u001b[0;31m{sl_str}\u001b[0m\n"
         )
 

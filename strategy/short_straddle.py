@@ -177,6 +177,7 @@ class ShortStraddleStrategy:
         # ---------------------------------------------------------------
         # Dynamic lot size calculation
         # ---------------------------------------------------------------
+        self.available_balance: Optional[float] = None
         if self.static_lot_size is not None:
             # Static override — use config value directly
             self.lot_size = self.static_lot_size
@@ -199,7 +200,8 @@ class ShortStraddleStrategy:
             #   capital               = available_balance × capital_allocation_pct
             #   lot_size              = floor(capital / total_margin_per_lot)
             #
-            available_balance = self.client.get_available_balance()
+            self.available_balance = self.client.get_available_balance()
+            available_balance = self.available_balance
             if available_balance > 0 and self.spot_price > 0 and self.contract_value > 0:
                 capital = available_balance * self.capital_allocation_pct
                 # Margin required per lot per leg (USD), then × 2 for both legs
@@ -262,7 +264,7 @@ class ShortStraddleStrategy:
                 put_premium=self.put_entry_premium,
                 total_premium=self.entry_premium,
                 lot_size=self.lot_size,
-                leverage=self.leverage,
+                account_balance=self.available_balance,
                 sl_threshold=self.sl_threshold,
                 mode=self.mode,
                 entry_slippage_usd=self.entry_slippage_usd,
@@ -378,7 +380,7 @@ class ShortStraddleStrategy:
             put_premium=self.put_entry_premium,
             total_premium=self.entry_premium,
             lot_size=self.lot_size,
-            leverage=self.leverage,
+            account_balance=self.available_balance,
             sl_threshold=self.sl_threshold,
             mode=self.mode,
             entry_slippage_usd=self.entry_slippage_usd,
