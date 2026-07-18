@@ -103,7 +103,7 @@ class DeltaRestClient:
         ).hexdigest()
         return signature
 
-    def _make_auth_request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Any:
+    def _make_auth_request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, suppress_errors: bool = False) -> Any:
         """Make authenticated API request directly."""
         import requests
 
@@ -169,9 +169,14 @@ class DeltaRestClient:
                 return response.json()
             except requests.exceptions.RequestException as e:
                 if attempt == max_retries:
-                    logger.error(f"Auth API request failed: {endpoint}", error=str(e))
-                    if e.response is not None:
-                        logger.error(f"Response: {e.response.text}")
+                    if suppress_errors:
+                        logger.warning(f"Auth API request failed (suppressed): {endpoint}", error=str(e))
+                        if e.response is not None:
+                            logger.warning(f"Response (suppressed): {e.response.text}")
+                    else:
+                        logger.error(f"Auth API request failed: {endpoint}", error=str(e))
+                        if e.response is not None:
+                            logger.error(f"Response: {e.response.text}")
                     raise APIError(f"Auth request failed: {e}")
 
     def _make_direct_request(self, endpoint: str, params: Optional[Dict] = None) -> Any:
@@ -471,7 +476,7 @@ class DeltaRestClient:
                 "side": side,
                 "order_type": order_type,
             }
-            response = self._make_auth_request("POST", "/v2/orders/compute_margin", data=data)
+            response = self._make_auth_request("POST", "/v2/orders/compute_margin", data=data, suppress_errors=True)
             result = response.get("result", {})
             if result is None:
                 return None
