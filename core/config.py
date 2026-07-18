@@ -30,6 +30,7 @@ class StrategyConfig(BaseModel):
     exit_time: str = Field(default="17:25")
     timezone: str = Field(default="Asia/Kolkata")
     lot_size: Optional[int] = Field(default=None, gt=0)           # Static lot size (overrides dynamic sizing if set)
+    max_lot_size: Optional[int] = Field(default=None, gt=0)       # Hard limit on dynamic lot sizing
     capital_allocation_pct: float = Field(default=60.0, gt=0, le=100)  # % of balance to deploy per trade
     leverage: Optional[int] = Field(default=200, gt=0)  # Kept for backward compatibility
     option_margin_requirement_pct: float = Field(default=10.0, gt=0, le=100)  # % of spot price as margin

@@ -45,6 +45,7 @@ class ShortStraddleStrategy:
         # Strategy parameters from config
         self.underlying = config.strategy.underlying
         self.static_lot_size = config.strategy.lot_size           # None = use dynamic sizing
+        self.max_lot_size = config.strategy.max_lot_size           # None = no limit
         self.capital_allocation_pct = config.strategy.capital_allocation_pct / 100.0
         self.lot_size: int = config.strategy.lot_size or 1        # Will be overridden dynamically at entry
         self.leverage = config.strategy.leverage
@@ -244,6 +245,8 @@ class ShortStraddleStrategy:
                     # margin offsets change), so we verify with the full lot
                     # count once calculated and step down if needed.
                     candidate_lots = max(1, int(capital / margin_per_lot))
+                    if self.max_lot_size is not None:
+                        candidate_lots = min(candidate_lots, self.max_lot_size)
 
                     # Verify the full-size order fits — step down if over budget
                     for lots in range(candidate_lots, 0, -1):
@@ -291,6 +294,8 @@ class ShortStraddleStrategy:
                     total_margin_per_lot = 2 * margin_per_leg
                     if total_margin_per_lot > 0:
                         self.lot_size = max(1, int(capital / total_margin_per_lot))
+                        if self.max_lot_size is not None:
+                            self.lot_size = min(self.lot_size, self.max_lot_size)
                         logger.info(
                             f"Dynamic lot size (fallback formula): "
                             f"balance=${available_balance:,.2f}, "

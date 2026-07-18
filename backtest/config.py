@@ -92,7 +92,7 @@ class BacktestConfig:
     capital_allocation_pct:  float = field(default_factory=lambda: LIVE_CAPITAL_ALLOC_PCT)
     leverage:                float = field(default_factory=lambda: LIVE_LEVERAGE)
     option_margin_requirement_pct: float = field(default_factory=lambda: LIVE_OPTION_MARGIN_PCT)
-    max_lot_size:            int   = 10_000        # hard cap per leg (0 = no cap)
+    max_lot_size:            int   = 1000          # hard cap per leg (0 = no cap)
     lot_size:                int   = field(default_factory=lambda: int(LIVE_LOT_SIZE) if LIVE_LOT_SIZE else 150)
     contract_value:          float = 0.001         # BTC contract size multiplier
     initial_capital:         float = 1_000.0       # USD — starting equity
