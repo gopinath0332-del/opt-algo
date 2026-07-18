@@ -443,6 +443,47 @@ class DeltaRestClient:
             logger.error(f"Failed to fetch available balance: {e}")
             return 0.0
 
+    def get_order_margin(
+        self,
+        product_id: int,
+        size: int,
+        side: str = "sell",
+        order_type: str = "market_order",
+    ) -> Optional[float]:
+        """Query the exchange for the actual margin required for an order.
+
+        Calls POST /v2/orders/compute_margin which mirrors the exchange UI's
+        "Order Margin" value and accounts for premium offset on short options.
+
+        Args:
+            product_id: Option product ID.
+            size: Number of lots.
+            side: 'buy' or 'sell'.
+            order_type: 'market_order' or 'limit_order'.
+
+        Returns:
+            Margin in USD, or None if the request fails.
+        """
+        try:
+            data = {
+                "product_id": product_id,
+                "size": size,
+                "side": side,
+                "order_type": order_type,
+            }
+            response = self._make_auth_request("POST", "/v2/orders/compute_margin", data=data)
+            result = response.get("result", {})
+            if result is None:
+                return None
+            margin = result.get("order_margin")
+            if margin is not None:
+                return float(margin)
+            logger.warning("compute_margin response missing 'order_margin'", response=response)
+            return None
+        except Exception as e:
+            logger.warning(f"get_order_margin failed: {e}")
+            return None
+
     def get_wallet_transactions(
         self,
         transaction_types: str,

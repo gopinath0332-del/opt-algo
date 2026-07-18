@@ -204,25 +204,107 @@ class ShortStraddleStrategy:
             available_balance = self.available_balance
             if available_balance > 0 and self.spot_price > 0 and self.contract_value > 0:
                 capital = available_balance * self.capital_allocation_pct
-                # Margin required per lot per leg (USD), then × 2 for both legs
-                margin_per_leg = self.spot_price * self.contract_value * self.option_margin_requirement_pct
-                total_margin_per_lot = 2 * margin_per_leg
-                if total_margin_per_lot > 0:
-                    self.lot_size = max(1, int(capital / total_margin_per_lot))
-                    logger.info(
-                        f"Dynamic lot size calculation (margin-based): "
-                        f"balance=${available_balance:,.2f}, "
-                        f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
-                        f"spot=${self.spot_price:,.2f}, "
-                        f"contract_value={self.contract_value}, "
-                        f"margin_pct={self.option_margin_requirement_pct*100:.1f}%, "
-                        f"margin/leg=${margin_per_leg:.4f}, "
-                        f"total_margin/lot=${total_margin_per_lot:.4f}, "
-                        f"lot_size={self.lot_size}"
+
+                # ----------------------------------------------------------
+                # Primary: ask the exchange for the actual margin per lot.
+                # POST /v2/orders/compute_margin mirrors the exchange UI and
+                # accounts for the premium offset that shorts receive.
+                # We query 1-lot margin for the call (the heavier leg) and
+                # double it for both legs, then binary-search to find the
+                # exact max lots that fit inside `capital`.
+                # ----------------------------------------------------------
+                margin_per_lot: Optional[float] = None
+                try:
+                    call_margin_1lot = self.client.get_order_margin(
+                        product_id=self.call_product_id,
+                        size=1,
+                        side="sell",
+                        order_type=self.order_type,
                     )
+                    put_margin_1lot = self.client.get_order_margin(
+                        product_id=self.put_product_id,
+                        size=1,
+                        side="sell",
+                        order_type=self.order_type,
+                    )
+                    if call_margin_1lot is not None and put_margin_1lot is not None:
+                        margin_per_lot = call_margin_1lot + put_margin_1lot
+                        logger.info(
+                            f"Exchange margin (1 lot): "
+                            f"Call=${call_margin_1lot:.4f}, "
+                            f"Put=${put_margin_1lot:.4f}, "
+                            f"Combined=${margin_per_lot:.4f}"
+                        )
+                except Exception as e:
+                    logger.warning(f"compute_margin API failed, will use fallback formula: {e}")
+
+                if margin_per_lot is not None and margin_per_lot > 0:
+                    # Use exchange-reported margin per lot directly.
+                    # Note: margin is *not* strictly linear at scale (portfolio
+                    # margin offsets change), so we verify with the full lot
+                    # count once calculated and step down if needed.
+                    candidate_lots = max(1, int(capital / margin_per_lot))
+
+                    # Verify the full-size order fits — step down if over budget
+                    for lots in range(candidate_lots, 0, -1):
+                        try:
+                            call_margin_full = self.client.get_order_margin(
+                                product_id=self.call_product_id,
+                                size=lots,
+                                side="sell",
+                                order_type=self.order_type,
+                            ) or 0.0
+                            put_margin_full = self.client.get_order_margin(
+                                product_id=self.put_product_id,
+                                size=lots,
+                                side="sell",
+                                order_type=self.order_type,
+                            ) or 0.0
+                            total_margin_full = call_margin_full + put_margin_full
+                            if total_margin_full <= capital:
+                                self.lot_size = lots
+                                logger.info(
+                                    f"Dynamic lot size (exchange margin): "
+                                    f"balance=${available_balance:,.2f}, "
+                                    f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
+                                    f"margin_for_{lots}_lots=${total_margin_full:.4f}, "
+                                    f"lot_size={lots}"
+                                )
+                                break
+                        except Exception:
+                            # If verification call fails, accept the candidate
+                            self.lot_size = candidate_lots
+                            logger.info(
+                                f"Dynamic lot size (exchange margin, unverified): lot_size={candidate_lots}"
+                            )
+                            break
+                    else:
+                        self.lot_size = 1
+                        logger.warning("Exchange margin exceeds capital even for 1 lot — defaulting to 1")
+
                 else:
-                    self.lot_size = 1
-                    logger.warning("Margin per lot is 0 — defaulting lot size to 1")
+                    # ----------------------------------------------------------
+                    # Fallback: raw notional-based estimate (original formula).
+                    # Used when compute_margin API is unavailable.
+                    # ----------------------------------------------------------
+                    margin_per_leg = self.spot_price * self.contract_value * self.option_margin_requirement_pct
+                    total_margin_per_lot = 2 * margin_per_leg
+                    if total_margin_per_lot > 0:
+                        self.lot_size = max(1, int(capital / total_margin_per_lot))
+                        logger.info(
+                            f"Dynamic lot size (fallback formula): "
+                            f"balance=${available_balance:,.2f}, "
+                            f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
+                            f"spot=${self.spot_price:,.2f}, "
+                            f"contract_value={self.contract_value}, "
+                            f"margin_pct={self.option_margin_requirement_pct*100:.1f}%, "
+                            f"margin/leg=${margin_per_leg:.4f}, "
+                            f"total_margin/lot=${total_margin_per_lot:.4f}, "
+                            f"lot_size={self.lot_size}"
+                        )
+                    else:
+                        self.lot_size = 1
+                        logger.warning("Margin per lot is 0 — defaulting lot size to 1")
             else:
                 self.lot_size = 1
                 logger.warning(
@@ -469,8 +551,8 @@ class ShortStraddleStrategy:
                     f"Total: ${current_total:.4f}, Loss: ${mtm_loss:.4f} ({loss_pct:.1f}% of premium)"
                 )
 
-                # Check SL: if loss exceeds threshold
-                if mtm_loss >= self.sl_threshold:
+                # Check SL: if loss exceeds threshold (skip if SL is disabled)
+                if self.sl_threshold is not None and mtm_loss >= self.sl_threshold:
                     logger.warning(
                         f"⚠️ STOP-LOSS HIT! Loss: ${mtm_loss:.4f} >= Threshold: ${self.sl_threshold:.4f} "
                         f"({loss_pct:.1f}% of premium)"

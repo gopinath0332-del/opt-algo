@@ -88,8 +88,7 @@ class BacktestConfig:
     # (exchange liquidity / account limits make unlimited scaling unrealistic).
     # Set to 0 to disable the cap.
     #
-    # lot_size below is only used when use_dynamic_lot_size=False.
-    use_dynamic_lot_size:    bool  = True
+    use_dynamic_lot_size:    bool  = field(default_factory=lambda: LIVE_LOT_SIZE is None)
     capital_allocation_pct:  float = field(default_factory=lambda: LIVE_CAPITAL_ALLOC_PCT)
     leverage:                float = field(default_factory=lambda: LIVE_LEVERAGE)
     option_margin_requirement_pct: float = field(default_factory=lambda: LIVE_OPTION_MARGIN_PCT)
