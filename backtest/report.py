@@ -390,13 +390,13 @@ class ReportGenerator:
         show = df.sort_values("date", ascending=False)
         rows = ""
         contract_value = self.cfg.contract_value
-        margin_pct = self.cfg.option_margin_requirement_pct
+        leverage = self.cfg.leverage
         for _, r in show.iterrows():
             net = r.get("net_pnl_usd", r["pnl_usd"])
             col = "#26a69a" if net >= 0 else "#ef5350"
             lot = int(r.get("lot_size", self.cfg.lot_size))
             spot = r.get("spot_estimate", r["atm_strike"])
-            margin_used = 2 * spot * contract_value * (margin_pct / 100.0) * lot if spot else 0.0
+            margin_used = 2 * spot * contract_value / leverage * lot if spot else 0.0
             equity = r.get("equity", self.cfg.initial_capital)
             cum_pnl = r.get("cumulative_pnl", 0.0)
             rows += (
