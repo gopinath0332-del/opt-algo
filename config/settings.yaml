@@ -14,7 +14,7 @@ strategy:
   max_lot_size: 1000          # Capped at maximum of 1,000 lots per leg
   leverage: 200               # 200x leverage
   order_type: "market_order"  # Market orders for instant fill
-  skip_weekends: true         # Skip trading on Saturdays and Sundays (UTC/IST)
+  skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
 
   # Combined Stop-Loss Configuration
   stop_loss: null
