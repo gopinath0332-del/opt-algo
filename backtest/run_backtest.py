@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lot-size", type=int,   default=LIVE_LOT_SIZE)
     p.add_argument("--sl-pct",   type=float, default=LIVE_SL_PCT)
     p.add_argument("--capital",  type=float, default=1_000.0)
+    p.add_argument("--alloc-pct", type=float, default=None, help="Capital allocation percentage (overrides settings.yaml)")
     p.add_argument("--verbose",  action="store_true")
     p.add_argument("--skip-weekends", action="store_true", help="Skip trades on Saturday and Sunday")
     return p.parse_args()
@@ -80,12 +81,16 @@ def main() -> None:
     start = args.month if args.month else args.start
     end   = args.month if args.month else args.end
 
+    from backtest.config import LIVE_CAPITAL_ALLOC_PCT
+    alloc_pct = args.alloc_pct if args.alloc_pct is not None else LIVE_CAPITAL_ALLOC_PCT
+
     cfg = BacktestConfig(
         start_month     = start,
         end_month       = end,
         lot_size        = args.lot_size,
         sl_pct          = args.sl_pct,
         initial_capital = args.capital,
+        capital_allocation_pct = alloc_pct,
         verbose         = args.verbose,
     )
 
