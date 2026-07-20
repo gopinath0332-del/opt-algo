@@ -381,6 +381,7 @@ class ShortStraddleStrategy:
             self.is_position_open = True  # Simulate for monitoring
 
             # Send entry alert even in disabled mode
+            margin_usd = 2 * self.spot_price * self.contract_value * self.option_margin_requirement_pct * self.lot_size
             self.notifier.send_entry_alert(
                 underlying=self.underlying,
                 strategy_name="Short Straddle",
@@ -396,6 +397,7 @@ class ShortStraddleStrategy:
                 sl_threshold=self.sl_threshold,
                 mode=self.mode,
                 entry_slippage_usd=self.entry_slippage_usd,
+                margin_usd=margin_usd,
             )
             return
 
@@ -497,6 +499,7 @@ class ShortStraddleStrategy:
         self.sl_threshold = self.entry_premium * self.sl_pct if self.sl_pct is not None else None
 
         # Send Discord entry notification
+        margin_usd = 2 * self.spot_price * self.contract_value * self.option_margin_requirement_pct * self.lot_size
         self.notifier.send_entry_alert(
             underlying=self.underlying,
             strategy_name="Short Straddle",
@@ -512,6 +515,7 @@ class ShortStraddleStrategy:
             sl_threshold=self.sl_threshold,
             mode=self.mode,
             entry_slippage_usd=self.entry_slippage_usd,
+            margin_usd=margin_usd,
         )
 
         # Journal to Firestore

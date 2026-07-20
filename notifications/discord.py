@@ -71,6 +71,7 @@ class DiscordNotifier:
         sl_threshold: float,
         mode: str = "live",
         entry_slippage_usd: Optional[float] = None,
+        margin_usd: Optional[float] = None,
     ) -> None:
         """Send a straddle entry notification."""
         mode_color = "1;32" if mode == "live" else "1;36"
@@ -85,12 +86,18 @@ class DiscordNotifier:
             f"ATM Strike: \u001b[0;36m${self._f(atm_strike, 2)}\u001b[0m\n"
             f"\n"
             f"\u001b[1;37mCALL LEG:\u001b[0m {call_symbol}\n"
-            f"  Premium: \u001b[0;33m${self._f(call_premium)}\u001b[0m\n"
+            f"  Premium: \u001b[0;33m{self._f(call_premium)} points\u001b[0m\n"
             f"\u001b[1;37mPUT LEG:\u001b[0m {put_symbol}\n"
-            f"  Premium: \u001b[0;33m${self._f(put_premium)}\u001b[0m\n"
+            f"  Premium: \u001b[0;33m{self._f(put_premium)} points\u001b[0m\n"
             f"\n"
-            f"Total Premium: \u001b[0;32m${self._f(total_premium)}\u001b[0m\n"
+            f"Total Premium: \u001b[0;32m{self._f(total_premium)} points\u001b[0m\n"
             f"Lot Size: \u001b[0;36m{lot_size}\u001b[0m per leg\n"
+        )
+
+        if margin_usd is not None:
+            message += f"Margin Locked: \u001b[0;33m${self._f(margin_usd, 2)}\u001b[0m\n"
+
+        message += (
             f"Account Balance: \u001b[0;35m${self._f(account_balance, 2) if account_balance is not None else 'N/A'}\u001b[0m\n"
             f"Combined SL: \u001b[0;31m{sl_str}\u001b[0m\n"
         )
