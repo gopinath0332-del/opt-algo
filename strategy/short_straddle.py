@@ -78,6 +78,12 @@ class ShortStraddleStrategy:
         self.contract_value: float = 0.001
         self.entry_time_us: int = 0
 
+    def _calculate_margin_per_leg(self, spot_price: float) -> float:
+        """Calculate estimated margin per leg per lot."""
+        if self.leverage and self.leverage > 0:
+            return (spot_price * self.contract_value) / self.leverage
+        return spot_price * self.contract_value * self.option_margin_requirement_pct
+
     def run(self, resume_state: Optional[Dict[str, Any]] = None) -> None:
         """Execute the full strategy cycle: entry → monitor → exit.
 
@@ -331,19 +337,21 @@ class ShortStraddleStrategy:
                     # Fallback: raw notional-based estimate (original formula).
                     # Used when compute_margin API is unavailable.
                     # ----------------------------------------------------------
-                    margin_per_leg = self.spot_price * self.contract_value * self.option_margin_requirement_pct
+                    margin_per_leg = self._calculate_margin_per_leg(self.spot_price)
                     total_margin_per_lot = 2 * margin_per_leg
                     if total_margin_per_lot > 0:
                         self.lot_size = max(1, int(capital / total_margin_per_lot))
                         if self.max_lot_size is not None:
                             self.lot_size = min(self.lot_size, self.max_lot_size)
+                        
+                        effective_margin_pct = (1.0 / self.leverage) if (self.leverage and self.leverage > 0) else self.option_margin_requirement_pct
                         logger.info(
                             f"Dynamic lot size (fallback formula): "
                             f"balance=${available_balance:,.2f}, "
                             f"capital ({self.capital_allocation_pct*100:.0f}%)=${capital:,.2f}, "
                             f"spot=${self.spot_price:,.2f}, "
                             f"contract_value={self.contract_value}, "
-                            f"margin_pct={self.option_margin_requirement_pct*100:.1f}%, "
+                            f"margin_pct={effective_margin_pct*100:.2f}%, "
                             f"margin/leg=${margin_per_leg:.4f}, "
                             f"total_margin/lot=${total_margin_per_lot:.4f}, "
                             f"lot_size={self.lot_size}"
@@ -381,7 +389,7 @@ class ShortStraddleStrategy:
             self.is_position_open = True  # Simulate for monitoring
 
             # Send entry alert even in disabled mode
-            margin_usd = 2 * self.spot_price * self.contract_value * self.option_margin_requirement_pct * self.lot_size
+            margin_usd = 2 * self._calculate_margin_per_leg(self.spot_price) * self.lot_size
             self.notifier.send_entry_alert(
                 underlying=self.underlying,
                 strategy_name="Short Straddle",
@@ -499,7 +507,7 @@ class ShortStraddleStrategy:
         self.sl_threshold = self.entry_premium * self.sl_pct if self.sl_pct is not None else None
 
         # Send Discord entry notification
-        margin_usd = 2 * self.spot_price * self.contract_value * self.option_margin_requirement_pct * self.lot_size
+        margin_usd = 2 * self._calculate_margin_per_leg(self.spot_price) * self.lot_size
         self.notifier.send_entry_alert(
             underlying=self.underlying,
             strategy_name="Short Straddle",
