@@ -78,8 +78,11 @@ class ShortStraddleStrategy:
         self.contract_value: float = 0.001
         self.entry_time_us: int = 0
 
-    def run(self) -> None:
-        """Execute the full strategy cycle: entry → monitor → exit."""
+    def run(self, resume_state: Optional[Dict[str, Any]] = None) -> None:
+        """Execute the full strategy cycle: entry → monitor → exit.
+
+        If resume_state is provided, it skips entry and resumes monitoring directly.
+        """
         now = datetime.now(IST)
         logger.info(
             f"Short Straddle strategy starting",
@@ -87,10 +90,11 @@ class ShortStraddleStrategy:
             mode=self.mode,
             time=now.strftime("%Y-%m-%d %H:%M:%S IST"),
             order_placement=self.order_placement_enabled,
+            resume=resume_state is not None,
         )
 
-        # Check weekend filter
-        if self.skip_weekends and now.weekday() in (5, 6):
+        # Check weekend filter (skip check if resuming)
+        if not resume_state and self.skip_weekends and now.weekday() in (5, 6):
             logger.info(f"Today is {now.strftime('%A')} (weekend). Skipping trade execution per configuration.")
             self.notifier.send_status_message(
                 f"ℹ️ Weekend Skip — {self.underlying}",
@@ -100,8 +104,45 @@ class ShortStraddleStrategy:
             return
 
         try:
-            # Step 1: Entry
-            self._execute_entry()
+            if resume_state:
+                logger.info("=" * 60)
+                logger.info("RESUMING STRATEGY — Restoring state from active trade")
+                logger.info("=" * 60)
+                self.trade_id = resume_state["trade_id"]
+                self.call_product_id = int(resume_state["call_product_id"])
+                self.put_product_id = int(resume_state["put_product_id"])
+                self.call_symbol = resume_state["call_symbol"]
+                self.put_symbol = resume_state["put_symbol"]
+                self.lot_size = int(resume_state["lot_size"])
+                self.entry_premium = float(resume_state["entry_premium"])
+                self.call_entry_premium = float(resume_state.get("call_entry_premium", 0.0))
+                self.put_entry_premium = float(resume_state.get("put_entry_premium", 0.0))
+                self.sl_threshold = resume_state.get("sl_threshold")
+                if self.sl_threshold is None and self.sl_pct is not None:
+                    self.sl_threshold = self.entry_premium * self.sl_pct
+                elif self.sl_threshold is None:
+                    self.sl_threshold = float('inf')
+                self.atm_strike = float(resume_state.get("atm_strike", 0.0))
+                self.spot_price = float(resume_state.get("spot_price", 0.0))
+                self.entry_time_us = int(resume_state.get("entry_time_us", int(time.time() * 1_000_000)))
+                self.is_position_open = True
+                
+                # Send Discord resumption notification
+                sl_threshold_str = f"${self.sl_threshold:.4f}" if self.sl_threshold != float('inf') else "None (Disabled)"
+                self.notifier.send_status_message(
+                    f"🔄 Options Bot Resumed — {self.underlying}",
+                    f"Resumed monitoring active short straddle:\n"
+                    f"Strike: **{self.atm_strike}**\n"
+                    f"Call: `{self.call_symbol}`\n"
+                    f"Put: `{self.put_symbol}`\n"
+                    f"Lot Size: **{self.lot_size}** per leg\n"
+                    f"Total Premium collected: **${self.entry_premium:.4f}**\n"
+                    f"SL Threshold: **{sl_threshold_str}**",
+                    color=3447003, # Blue
+                )
+            else:
+                # Step 1: Entry
+                self._execute_entry()
 
             if not self.is_position_open:
                 logger.warning("Entry failed — no positions opened. Aborting strategy cycle.")

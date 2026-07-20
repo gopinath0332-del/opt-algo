@@ -126,6 +126,158 @@ def run_strategy(config, logger):
     logger.info("Strategy execution complete")
 
 
+def check_and_resume_active_trades(config, logger):
+    """Check if the service was restarted during an active trade window and resume monitoring."""
+    now = datetime.now(IST)
+    entry_time = config.strategy.entry_time
+    exit_time = config.strategy.exit_time
+    
+    try:
+        entry_h, entry_m = map(int, entry_time.split(":"))
+        exit_h, exit_m = map(int, exit_time.split(":"))
+    except ValueError as e:
+        logger.error(f"Invalid entry/exit time format in configuration: {e}")
+        return
+
+    today_entry = now.replace(hour=entry_h, minute=entry_m, second=0, microsecond=0)
+    today_exit = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
+
+    if today_entry <= now < today_exit:
+        logger.info("Service started/restarted within the trading window. Performing recovery checks...")
+        try:
+            recovered_state = None
+
+            # 1. Primary Recovery: Firestore
+            if config.firestore_enabled:
+                from core.firestore_client import get_open_trades
+                open_trades = get_open_trades(config.strategy.underlying)
+                if open_trades:
+                    # Look for active trades on the exchange corresponding to Firestore open records
+                    from api.rest_client import DeltaRestClient
+                    client = DeltaRestClient(config)
+                    try:
+                        positions = client.get_positions()
+                    except Exception as e:
+                        logger.error(f"Failed to fetch positions from exchange during recovery: {e}")
+                        positions = []
+
+                    for trade in open_trades:
+                        call_pid = trade.get("call_product_id")
+                        put_pid = trade.get("put_product_id")
+                        if call_pid and put_pid:
+                            has_call = any(str(p.get("product_id")) == str(call_pid) and float(p.get("size", 0)) < 0 for p in positions)
+                            has_put = any(str(p.get("product_id")) == str(put_pid) and float(p.get("size", 0)) < 0 for p in positions)
+
+                            if has_call and has_put:
+                                logger.info(f"Found active open trade in Firestore (ID: {trade.get('trade_id')}) with matching open positions on Delta Exchange.")
+                                recovered_state = {
+                                    "trade_id": trade.get("trade_id"),
+                                    "call_product_id": call_pid,
+                                    "put_product_id": put_pid,
+                                    "call_symbol": trade.get("call_symbol"),
+                                    "put_symbol": trade.get("put_symbol"),
+                                    "lot_size": trade.get("lot_size"),
+                                    "entry_premium": trade.get("total_premium_collected"),
+                                    "call_entry_premium": trade.get("call_premium"),
+                                    "put_entry_premium": trade.get("put_premium"),
+                                    "sl_threshold": trade.get("sl_threshold"),
+                                    "atm_strike": trade.get("atm_strike"),
+                                    "spot_price": trade.get("spot_price"),
+                                    "entry_time_us": int(datetime.fromisoformat(trade.get("entry_time_ist")).timestamp() * 1_000_000) if trade.get("entry_time_ist") else int(time.time() * 1_000_000)
+                                }
+                                break
+                            else:
+                                logger.warning(f"Trade {trade.get('trade_id')} is marked OPEN in Firestore but matching positions are not active on Delta Exchange.")
+
+            # 2. Fallback Recovery: Delta Exchange Positions directly
+            if not recovered_state:
+                logger.info("Firestore recovery did not find any active trade. Checking Delta Exchange positions directly...")
+                from api.rest_client import DeltaRestClient
+                client = DeltaRestClient(config)
+                try:
+                    positions = client.get_positions()
+                except Exception as e:
+                    logger.error(f"Failed to fetch positions from exchange: {e}")
+                    positions = []
+
+                short_options = []
+                for pos in positions:
+                    size = float(pos.get("size", 0))
+                    if size < 0:  # Short position
+                        symbol = pos.get("product_symbol", "")
+                        pid = pos.get("product_id")
+                        if (symbol.startswith("C-") or symbol.startswith("P-")) and config.strategy.underlying in symbol:
+                            short_options.append({
+                                "product_id": pid,
+                                "symbol": symbol,
+                                "size": abs(int(size)),
+                                "entry_price": float(pos.get("entry_price", 0.0))
+                            })
+
+                groups = {}
+                for opt in short_options:
+                    suffix = opt["symbol"][2:]
+                    if suffix not in groups:
+                        groups[suffix] = []
+                    groups[suffix].append(opt)
+
+                for suffix, opts in groups.items():
+                    if len(opts) >= 2:
+                        calls = [o for o in opts if o["symbol"].startswith("C-")]
+                        puts = [o for o in opts if o["symbol"].startswith("P-")]
+                        if calls and puts:
+                            call_opt = calls[0]
+                            put_opt = puts[0]
+
+                            if call_opt["size"] == put_opt["size"]:
+                                logger.info(f"Recovered open straddle from exchange: Call={call_opt['symbol']}, Put={put_opt['symbol']}, size={call_opt['size']}")
+                                parts = suffix.split("-")
+                                strike = 0.0
+                                if len(parts) >= 2:
+                                    try:
+                                        strike = float(parts[1])
+                                    except ValueError:
+                                        pass
+
+                                entry_prem = call_opt["entry_price"] + put_opt["entry_price"]
+                                trade_id = f"recovered_straddle_{config.strategy.underlying}_{now.strftime('%Y%m%d_%H%M%S')}"
+
+                                recovered_state = {
+                                    "trade_id": trade_id,
+                                    "call_product_id": call_opt["product_id"],
+                                    "put_product_id": put_opt["product_id"],
+                                    "call_symbol": call_opt["symbol"],
+                                    "put_symbol": put_opt["symbol"],
+                                    "lot_size": call_opt["size"],
+                                    "entry_premium": entry_prem,
+                                    "call_entry_premium": call_opt["entry_price"],
+                                    "put_entry_premium": put_opt["entry_price"],
+                                    "sl_threshold": entry_prem * (config.strategy.stop_loss.value / 100.0) if config.strategy.stop_loss else None,
+                                    "atm_strike": strike,
+                                    "spot_price": strike,
+                                    "entry_time_us": int(time.time() * 1_000_000)
+                                }
+                                break
+
+            # 3. Resume strategy execution if trade state was recovered
+            if recovered_state:
+                logger.info(f"Resuming options trade monitoring for trade {recovered_state['trade_id']}")
+                from api.rest_client import DeltaRestClient
+                from notifications.manager import NotificationManager
+                from strategy.short_straddle import ShortStraddleStrategy
+
+                client = DeltaRestClient(config)
+                notifier = NotificationManager(config)
+                strategy = ShortStraddleStrategy(config, client, notifier)
+                strategy.run(resume_state=recovered_state)
+                logger.info("Resumed trade execution complete. Returning to daily scheduler.")
+            else:
+                logger.info("No active options trades detected to resume.")
+
+        except Exception as ex:
+            logger.error(f"Error during options bot recovery: {ex}", exc_info=True)
+
+
 def main():
     """Run the main application."""
     parser = argparse.ArgumentParser(
@@ -197,6 +349,9 @@ def main():
                 startup_msg,
                 color=3447003,  # Blue
             )
+
+            # Check and resume active trades on startup
+            check_and_resume_active_trades(config, logger)
 
             while True:
                 schedule.run_pending()

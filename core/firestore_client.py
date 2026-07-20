@@ -281,6 +281,32 @@ def journal_straddle_exit(
         return None
 
 
+def get_open_trades(underlying: str) -> List[Dict[str, Any]]:
+    """Get all open trades for a given underlying asset from Firestore.
+
+    Args:
+        underlying: The underlying asset (e.g., 'BTC')
+
+    Returns:
+        List of trade dictionaries
+    """
+    global _firestore_client, _firestore_enabled, _firestore_collection
+
+    if not _firestore_enabled or _firestore_client is None:
+        logger.debug("Firestore journaling disabled, cannot query open trades")
+        return []
+
+    try:
+        docs = _firestore_client.collection(_firestore_collection) \
+            .where("status", "==", "OPEN") \
+            .where("underlying", "==", underlying) \
+            .stream()
+        return [doc.to_dict() for doc in docs]
+    except Exception as e:
+        logger.error(f"Failed to query open trades from Firestore: {e}", exc_info=True)
+        return []
+
+
 def get_firestore_status() -> Dict[str, Any]:
     """Get Firestore client status.
 
