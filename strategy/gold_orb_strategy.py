@@ -184,7 +184,7 @@ class GoldOrbStrategy:
         self.trades = []
 
         def _fmt(ts_sec: float) -> str:
-            return datetime.fromtimestamp(ts_sec).strftime("%d-%m-%y %H:%M")
+            return datetime.fromtimestamp(ts_sec, tz=IST).strftime("%d-%m-%y %H:%M IST")
 
         df = df.copy()
         df["_dt_ist"] = df["time"].apply(
@@ -232,12 +232,13 @@ class GoldOrbStrategy:
 
                 tp = entry + (risk * self.rr_ratio) if signal == "LONG" else entry - (risk * self.rr_ratio)
 
-
-                entry_time_str = _fmt(float(row["time"]))
+                entry_ts = float(row["time"])
+                entry_time_str = _fmt(entry_ts)
 
                 result = "OPEN"
                 exit_price = float(day_df.iloc[-1]["close"])
-                exit_time_str = _fmt(float(day_df.iloc[-1]["time"]))
+                exit_ts = float(day_df.iloc[-1]["time"])
+                exit_time_str = _fmt(exit_ts)
 
                 for j in range(i + 1, len(day_df)):
                     sim = day_df.iloc[j]
@@ -254,22 +255,26 @@ class GoldOrbStrategy:
                     if sl_hit and tp_hit:
                         result = "SL HIT"
                         exit_price = sl
-                        exit_time_str = _fmt(float(sim["time"]))
+                        exit_ts = float(sim["time"])
+                        exit_time_str = _fmt(exit_ts)
                         break
                     elif sl_hit:
                         result = "SL HIT"
                         exit_price = sl
-                        exit_time_str = _fmt(float(sim["time"]))
+                        exit_ts = float(sim["time"])
+                        exit_time_str = _fmt(exit_ts)
                         break
                     elif tp_hit:
                         result = "TP HIT"
                         exit_price = tp
-                        exit_time_str = _fmt(float(sim["time"]))
+                        exit_ts = float(sim["time"])
+                        exit_time_str = _fmt(exit_ts)
                         break
 
                 pnl_pts = (
                     exit_price - entry if signal == "LONG" else entry - exit_price
                 )
+                hold_hours = round(max(0.0, exit_ts - entry_ts) / 3600.0, 1)
 
                 self.trades.append(
                     {
@@ -277,12 +282,15 @@ class GoldOrbStrategy:
                         "status": "CLOSED",
                         "entry_time": entry_time_str,
                         "exit_time": exit_time_str,
+                        "hold_hours": hold_hours,
+                        "hold_duration": f"{hold_hours:.1f} hrs",
                         "entry_price": entry,
                         "exit_price": exit_price,
                         "points": round(pnl_pts, 4),
                         "exit_type": result,
                         "orb_h1": h1,
                         "orb_l1": l1,
+
                         "sl": sl,
                         "tp": tp,
                         "entry_atr": 0.0,
@@ -338,6 +346,7 @@ class GoldOrbStrategy:
 
         self.entry_price = price
         self.entry_side = side
+        self.entry_time_ts = datetime.now(tz=IST).timestamp()
         self.trade_id = f"orb_{self.symbol}_{datetime.now(tz=IST).strftime('%Y%m%d_%H%M%S')}"
         self.trade_taken_today = True
 
@@ -405,8 +414,17 @@ class GoldOrbStrategy:
             action = "EXIT"
             discord_side = "EXIT"
 
+        entry_ts = getattr(self, "entry_time_ts", None)
+        if entry_ts:
+            dur_sec = max(0.0, datetime.now(tz=IST).timestamp() - entry_ts)
+            hrs = int(dur_sec // 3600)
+            mins = int((dur_sec % 3600) // 60)
+            hold_str = f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m"
+        else:
+            hold_str = None
+
         logger.info(
-            f"[{self.symbol}] {action} @ {price:.2f} | PnL={pnl:+.2f} pts | {reason}"
+            f"[{self.symbol}] {action} @ {price:.2f} | PnL={pnl:+.2f} pts | Hold={hold_str} | {reason}"
         )
 
         self.current_position = 0
@@ -436,6 +454,7 @@ class GoldOrbStrategy:
                     price=price,
                     reason=reason,
                     pnl=pnl,
+                    hold_duration=hold_str,
                     lot_size=self.fixed_lot_size,
                     strategy_name=STRATEGY_NAME,
                     timeframe=self.timeframe,
@@ -445,6 +464,8 @@ class GoldOrbStrategy:
             logger.error(f"[{self.symbol}] Discord exit alert failed: {e}")
 
         self.entry_price = None
+        self.entry_time_ts = None
+
         self.tp_price = None
         self.sl_price = None
         self.entry_side = None

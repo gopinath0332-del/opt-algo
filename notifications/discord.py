@@ -234,6 +234,7 @@ class DiscordNotifier:
         take_profit_price: Optional[float] = None,
         lot_size: Optional[int] = None,
         pnl: Optional[float] = None,
+        hold_duration: Optional[str] = None,
         strategy_name: str = "Strategy",
         timeframe: str = "1h",
         mode: str = "live",
@@ -268,8 +269,11 @@ class DiscordNotifier:
             )
             if pnl is not None:
                 message += f"P&L: \u001b[{pnl_color}m${self._f(pnl, 2)}\u001b[0m\n"
+            if hold_duration:
+                message += f"Hold Duration: \u001b[0;36m{hold_duration}\u001b[0m\n"
             message += f"Reason: \u001b[1;37m{reason}\u001b[0m\n"
 
         formatted = f"```ansi\n{message}\n```"
         self._send_embed(title, formatted, color)
+
 

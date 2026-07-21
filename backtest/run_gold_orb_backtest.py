@@ -66,7 +66,17 @@ def generate_html_report(metrics: dict, tdf: pd.DataFrame, out_path: Path):
     trades_html = ""
     for idx, row in tdf.iterrows():
         pnl_class = "positive" if row["net_pnl"] >= 0 else "negative"
-        exit_class = "tp-hit" if row["exit_type"] == "TP HIT" else "sl-hit"
+        res = row["exit_type"]
+        if res == "TP HIT":
+            exit_class = "tp-hit"
+            res_label = "TP HIT"
+        elif res == "SL HIT":
+            exit_class = "sl-hit"
+            res_label = "SL HIT"
+        else:
+            exit_class = "eod-exit"
+            res_label = "EOD EXIT"
+
         trades_html += f"""
         <tr>
             <td>{idx + 1}</td>
@@ -79,13 +89,16 @@ def generate_html_report(metrics: dict, tdf: pd.DataFrame, out_path: Path):
             <td>${row['exit_price']:,.2f}</td>
             <td>${row['sl']:,.2f}</td>
             <td>${row['tp']:,.2f}</td>
-            <td><span class="badge {exit_class}">{row['exit_type']}</span></td>
+            <td><span class="badge {exit_class}">{res_label}</span></td>
+            <td>{row.get('hold_duration', '-')}</td>
             <td>${row['gross_pnl']:+,.2f}</td>
             <td>${row['fees']:,.2f}</td>
             <td class="{pnl_class}">${row['net_pnl']:+,.2f}</td>
             <td style="font-weight:600;">${row['equity']:,.2f}</td>
         </tr>
         """
+
+
 
     equity_points = ", ".join(f"{x:.2f}" for x in [metrics["initial_capital"]] + list(tdf["equity"]))
     trade_labels = ", ".join(f"'{i}'" for i in range(len(tdf) + 1))
@@ -213,7 +226,9 @@ def generate_html_report(metrics: dict, tdf: pd.DataFrame, out_path: Path):
         .badge.short {{ background: rgba(218, 54, 51, 0.2); color: #f85149; }}
         .badge.tp-hit {{ background: rgba(35, 134, 54, 0.25); color: #3fb950; }}
         .badge.sl-hit {{ background: rgba(218, 54, 51, 0.25); color: #f85149; }}
+        .badge.eod-exit {{ background: rgba(210, 153, 34, 0.25); color: #d29922; }}
     </style>
+
 </head>
 <body>
     <div class="container">
@@ -281,8 +296,8 @@ def generate_html_report(metrics: dict, tdf: pd.DataFrame, out_path: Path):
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Entry Time</th>
-                        <th>Exit Time</th>
+                        <th>Entry Time (IST)</th>
+                        <th>Exit Time (IST)</th>
                         <th>Side</th>
                         <th>ORB H1</th>
                         <th>ORB L1</th>
@@ -291,12 +306,14 @@ def generate_html_report(metrics: dict, tdf: pd.DataFrame, out_path: Path):
                         <th>SL</th>
                         <th>TP</th>
                         <th>Result</th>
+                        <th>Hold Duration</th>
                         <th>Gross PnL</th>
                         <th>Fees</th>
                         <th>Net PnL</th>
                         <th>Equity</th>
                     </tr>
                 </thead>
+
                 <tbody>
                     {trades_html}
                 </tbody>
