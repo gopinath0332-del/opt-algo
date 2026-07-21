@@ -447,3 +447,77 @@ class GoldOrbStrategy:
         self.sl_price = None
         self.entry_side = None
         self.trade_id = None
+        self._save_state()
+
+    def _save_state(self):
+        """Save strategy state to local JSON file for crash resilience."""
+        import json
+        state_dir = Path("logs/state")
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_file = state_dir / f"gold_orb_{self.symbol}.json"
+
+        data = {
+            "orb_h1": self.orb_h1,
+            "orb_l1": self.orb_l1,
+            "orb_close": self.orb_close,
+            "orb_date": str(self.orb_date) if self.orb_date else None,
+            "trade_taken_today": self.trade_taken_today,
+            "current_position": self.current_position,
+            "entry_price": self.entry_price,
+            "tp_price": self.tp_price,
+            "sl_price": self.sl_price,
+            "entry_side": self.entry_side,
+            "trade_id": self.trade_id,
+        }
+        try:
+            state_file.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            logger.error(f"Failed to save strategy state: {e}")
+
+    def load_state(self):
+        """Load strategy state from local JSON file on restart."""
+        import json
+        state_file = Path("logs/state") / f"gold_orb_{self.symbol}.json"
+        if not state_file.exists():
+            return
+
+        try:
+            data = json.loads(state_file.read_text())
+            self.orb_h1 = data.get("orb_h1")
+            self.orb_l1 = data.get("orb_l1")
+            self.orb_close = data.get("orb_close")
+            d_str = data.get("orb_date")
+            self.orb_date = datetime.strptime(d_str, "%Y-%m-%d").date() if d_str else None
+            self.trade_taken_today = data.get("trade_taken_today", False)
+            self.current_position = data.get("current_position", 0)
+            self.entry_price = data.get("entry_price")
+            self.tp_price = data.get("tp_price")
+            self.sl_price = data.get("sl_price")
+            self.entry_side = data.get("entry_side")
+            self.trade_id = data.get("trade_id")
+            logger.info(f"[{self.symbol}] Restored state on restart | trade_taken_today={self.trade_taken_today}, pos={self.current_position}")
+        except Exception as e:
+            logger.error(f"Failed to load strategy state: {e}")
+
+    def reconcile_on_restart(self, client, product_id: int):
+        """Reconcile internal state with exchange positions & orders on service restart."""
+        self.load_state()
+
+        try:
+            positions = client.get_positions(product_id=product_id)
+            pos = next((p for p in positions if str(p.get("product_id")) == str(product_id)), None)
+            active_size = float(pos.get("size", 0)) if pos else 0.0
+
+            if active_size != 0:
+                # Position is still OPEN on exchange
+                self.current_position = 1 if active_size > 0 else -1
+                self.trade_taken_today = True
+                logger.info(f"[{self.symbol}] RECOVERY: Restored active position (size={active_size}) from Delta Exchange")
+            elif self.current_position != 0:
+                # Bot thought position was open, but exchange reports 0 (TP/SL hit while bot was offline)
+                logger.info(f"[{self.symbol}] RECOVERY: Trade completed on exchange while bot was offline. Syncing state.")
+                self.current_position = 0
+                self._save_state()
+        except Exception as e:
+            logger.error(f"Failed to reconcile state with Delta Exchange: {e}")
+
