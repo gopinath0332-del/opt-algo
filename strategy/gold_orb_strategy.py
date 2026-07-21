@@ -131,13 +131,34 @@ class GoldOrbStrategy:
         return None, ""
 
 
-    def update_position_state(
-        self,
-        action: str,
-        price: float = 0.0,
-        reason: str = "",
-    ):
-        """Called after order execution to record state, journal, and alert."""
+    def close_eod_position(self, client, product_id: int, current_price: float):
+        """
+        Close any remaining open position at End-of-Day (05:30 IST / before next ORB).
+        
+        1. Cancels active bracket orders (TP/SL) on Delta Exchange.
+        2. Places market order to close position.
+        3. Journals exit to Firestore & notifies Discord.
+        """
+        logger.info(f"[{self.symbol}] Executing EOD position closure for product {product_id}")
+        
+        # 1. Cancel open bracket orders
+        try:
+            client.cancel_all_orders(product_id)
+            logger.info(f"[{self.symbol}] Cancelled active bracket orders for product {product_id}")
+        except Exception as e:
+            logger.warning(f"[{self.symbol}] Error cancelling bracket orders: {e}")
+
+        # 2. Close position via market order
+        try:
+            res = client.close_position(product_id)
+            logger.info(f"[{self.symbol}] Closed EOD position: {res}")
+        except Exception as e:
+            logger.error(f"[{self.symbol}] Error closing position: {e}")
+
+        # 3. Update state & notifications
+        action = "EXIT_LONG" if self.current_position == 1 else "EXIT_SHORT"
+        self.update_position_state(action, price=current_price, reason="EOD Session Close")
+
         dt_ist = datetime.now(tz=IST)
         time_str = dt_ist.strftime("%d-%m-%y %H:%M IST")
 
