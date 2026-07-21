@@ -366,6 +366,7 @@ def run_gold_orb_backtest(
     leverage: int = 100,
     lot_size: int = 1000,
     fee_rate: float = 0.0001,
+    rr_ratio: float = 1.25,
 ):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
     logger = logging.getLogger(__name__)
@@ -377,9 +378,11 @@ def run_gold_orb_backtest(
     strategy = GoldOrbStrategy("XAUTUSD")
     strategy.fixed_lot_size = lot_size
     strategy.leverage = leverage
+    strategy.rr_ratio = rr_ratio
 
     trades = strategy.run_backtest(df)
     logger.info("Executed %d trades", len(trades))
+
 
     if not trades:
         print("No trades generated.")
@@ -489,10 +492,12 @@ def main():
     parser.add_argument("--leverage", type=int, default=100, help="Leverage multiplier")
     parser.add_argument("--lot-size", type=int, default=1000, help="Fixed lot size (contracts)")
     parser.add_argument("--fee-rate", type=float, default=0.0001, help="Fee rate per trade (e.g. 0.0001 for 0.01%%)")
+    parser.add_argument("--rr-ratio", type=float, default=1.25, help="Risk/Reward ratio multiplier (e.g. 1.25)")
 
     args = parser.parse_args()
 
-    run_gold_orb_backtest(Path(args.file), args.capital, args.leverage, args.lot_size, args.fee_rate)
+    run_gold_orb_backtest(Path(args.file), args.capital, args.leverage, args.lot_size, args.fee_rate, args.rr_ratio)
+
 
 
 

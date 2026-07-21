@@ -67,6 +67,8 @@ class GoldOrbStrategy:
         self.orb_date: Optional[date] = None
         self.trade_taken_today: bool = False
         self.pct_threshold: float = float(cfg.get("pct_threshold", 0.005))  # 0.5% movement threshold
+        self.rr_ratio: float = float(cfg.get("rr_ratio", 1.25))              # 1:1.25 Risk/Reward ratio
+
 
         # ---- Active Trade State ----
         self.current_position: int = 0  # 1 for Long, -1 for Short, 0 for Flat
@@ -197,7 +199,8 @@ class GoldOrbStrategy:
                     risk = entry * self.pct_threshold
                     sl = entry - risk if signal == "LONG" else entry + risk
 
-                tp = entry + risk if signal == "LONG" else entry - risk
+                tp = entry + (risk * self.rr_ratio) if signal == "LONG" else entry - (risk * self.rr_ratio)
+
 
                 entry_time_str = _fmt(float(row["time"]))
 
@@ -288,16 +291,19 @@ class GoldOrbStrategy:
 
         if side == "long":
             self.sl_price = self.orb_l1
-            self.tp_price = price + (price - self.orb_l1)
+            risk = max(price - self.orb_l1, price * self.pct_threshold)
+            self.tp_price = price + (risk * self.rr_ratio)
             self.current_position = 1
             action = "ENTRY_LONG"
             discord_side = "LONG ENTRY"
         else:
             self.sl_price = self.orb_h1
-            self.tp_price = price - (self.orb_h1 - price)
+            risk = max(self.orb_h1 - price, price * self.pct_threshold)
+            self.tp_price = price - (risk * self.rr_ratio)
             self.current_position = -1
             action = "ENTRY_SHORT"
             discord_side = "SHORT ENTRY"
+
 
         self.entry_price = price
         self.entry_side = side
