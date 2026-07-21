@@ -1,0 +1,3 @@
+i have an idea for XAUTUSD futures trades. Time period is 1H. it is ORB strategy. Timer period is early morning 6.30 -7.30 AM IST. when candle cloase above H1, take long, when candle close below L1, take short. I want to implement risk reward of 1:1. Leverage is 100x and fixed lot size of 1000.
+
+once implement is done, run backtest also. Backtest data set is available in D:\Workspace\crypto-backtest-data\Futures\delta_crypto_2026-01-01_to_2026-07-21_1h\delta_crypto_data

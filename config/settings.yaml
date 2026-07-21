@@ -21,6 +21,17 @@ strategy:
   # Monitoring
   monitor_interval_sec: 30     # Poll interval during SL monitoring (seconds)
 
+# Gold ORB Strategy Configuration
+strategies:
+  gold_orb:
+    symbol: "XAUTUSD"
+    trade_mode: "Both"        # "Long", "Short", or "Both"
+    orb_start_hour_ist: 6     # 06:30 IST candle
+    orb_start_minute_ist: 30
+    fixed_lot_size: 1000      # 1000 contracts fixed
+    leverage: 100             # 100x leverage
+
+
 # Notification Settings
 notifications:
   discord_enabled: true

@@ -836,3 +836,97 @@ class DeltaRestClient:
         logger.debug("Fetching order", order_id=order_id)
         response = self._make_auth_request("GET", f"/v2/orders/{order_id}")
         return cast(Dict[str, Any], response.get('result', response))
+
+    def place_bracket_order(
+        self,
+        product_id: int,
+        product_symbol: str,
+        tp_price: float,
+        sl_price: float,
+        stop_trigger_method: str = "mark_price",
+    ) -> Dict[str, Any]:
+        """Place a bracket (OCO) order that sets both TP (limit) and SL (stop-market).
+
+        The exchange monitors tick-by-tick; whichever leg fires first is filled and
+        the other is automatically cancelled.
+
+        Args:
+            product_id: Delta Exchange product ID (e.g. for XAUTUSD).
+            product_symbol: Symbol string (e.g. 'XAUTUSD').
+            tp_price: Take-profit limit price.
+            sl_price: Stop-loss trigger price.
+            stop_trigger_method: Price type for SL trigger ('mark_price' or 'last_traded_price').
+
+        Returns:
+            Bracket order response dict from the exchange.
+        """
+        payload = {
+            "product_id": product_id,
+            "product_symbol": product_symbol,
+            "take_profit_order": {
+                "order_type": "limit_order",
+                "limit_price": str(tp_price),
+            },
+            "stop_loss_order": {
+                "order_type": "market_order",
+                "stop_price": str(sl_price),
+            },
+            "bracket_stop_trigger_method": stop_trigger_method,
+        }
+
+        logger.info(
+            "Placing bracket order",
+            product_id=product_id,
+            product_symbol=product_symbol,
+            tp_price=tp_price,
+            sl_price=sl_price,
+        )
+
+        response = self._make_auth_request("POST", "/v2/orders/bracket", data=payload)
+        logger.info(
+            "Bracket order placed",
+            product_id=product_id,
+            result=response.get("result"),
+        )
+        return cast(Dict[str, Any], response)
+
+    def get_candles(
+        self,
+        symbol: str,
+        resolution: int = 60,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+        count: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Fetch OHLCV candle data for a symbol.
+
+        Args:
+            symbol: Trading symbol (e.g. 'XAUTUSD').
+            resolution: Candle resolution in minutes (60 = 1H).
+            start: Start time as Unix timestamp (seconds).
+            end: End time as Unix timestamp (seconds).
+            count: Number of candles to fetch if start is not specified.
+
+        Returns:
+            List of candle dicts with keys: time, open, high, low, close, volume.
+        """
+        import time as _time
+
+        if end is None:
+            end = int(_time.time())
+        if start is None:
+            start = end - resolution * 60 * count
+
+        params = {
+            "symbol": symbol,
+            "resolution": resolution,
+            "from": start,
+            "to": end,
+        }
+
+        logger.debug("Fetching candles", symbol=symbol, resolution=resolution)
+        response = self._make_direct_request("/v2/history/candles", params=params)
+        candles = response.get("result", [])
+        logger.debug("Fetched candles", symbol=symbol, count=len(candles))
+        return cast(List[Dict[str, Any]], candles)
+

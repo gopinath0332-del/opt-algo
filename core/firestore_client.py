@@ -320,3 +320,153 @@ def get_firestore_status() -> Dict[str, Any]:
         "connected": _firestore_client is not None,
         "collection": _firestore_collection,
     }
+
+
+def journal_orb_entry(
+    trade_id: str,
+    symbol: str,
+    action: str,
+    side: str,
+    price: float,
+    order_size: int,
+    leverage: int,
+    mode: str,
+    strategy_name: str,
+    reason: str,
+    orb_h1: float,
+    orb_l1: float,
+    tp_price: float,
+    sl_price: float,
+    entry_time_ist: str,
+    **kwargs,
+) -> Optional[str]:
+    """Journal a Gold ORB entry trade to Firestore.
+
+    Args:
+        trade_id: Unique trade identifier
+        symbol: Trading symbol (e.g. 'XAUTUSD')
+        action: Trade action ('ENTRY_LONG' or 'ENTRY_SHORT')
+        side: Order side ('buy' or 'sell')
+        price: Entry price
+        order_size: Number of contracts (e.g. 1000)
+        leverage: Leverage used (e.g. 100)
+        mode: Execution mode ('live' or 'paper')
+        strategy_name: Name of strategy ('Gold ORB')
+        reason: Signal reason
+        orb_h1: ORB High
+        orb_l1: ORB Low
+        tp_price: Take profit price
+        sl_price: Stop loss price
+        entry_time_ist: IST time string
+
+    Returns:
+        Document ID if successful, None otherwise
+    """
+    global _firestore_client, _firestore_enabled, _firestore_collection
+
+    if not _firestore_enabled or _firestore_client is None:
+        logger.debug("Firestore journaling disabled, skipping trade journal")
+        return None
+
+    try:
+        trade_doc = {
+            "trade_id": trade_id,
+            "status": "OPEN",
+            "entry_timestamp": datetime.utcnow(),
+            "symbol": symbol,
+            "underlying": "XAUT",
+            "strategy_name": strategy_name,
+            "mode": mode,
+            "action": action,
+            "side": side,
+            "entry_price": price,
+            "order_size": order_size,
+            "leverage": leverage,
+            "orb_h1": orb_h1,
+            "orb_l1": orb_l1,
+            "tp_price": tp_price,
+            "sl_price": sl_price,
+            "entry_time_ist": entry_time_ist,
+            "reason": reason,
+            "events": [{
+                "timestamp": datetime.utcnow(),
+                "action": action,
+                "price": price,
+                "reason": reason,
+            }],
+        }
+        trade_doc.update(kwargs)
+        trade_doc = {k: v for k, v in trade_doc.items() if v is not None}
+
+        doc_ref = _firestore_client.collection(_firestore_collection).document(trade_id)
+        doc_ref.set(trade_doc)
+        logger.info(f"[OK] Gold ORB OPENED in Firestore: {trade_id} | {symbol} {action} @ ${price:.2f}")
+        return trade_id
+    except Exception as e:
+        logger.error(f"Failed to journal Gold ORB entry to Firestore: {e}", exc_info=True)
+        return None
+
+
+def journal_orb_exit(
+    trade_id: str,
+    action: str,
+    side: str,
+    exit_price: float,
+    realized_pnl: float,
+    reason: str,
+    exit_time_ist: str,
+    **kwargs,
+) -> Optional[str]:
+    """Journal a Gold ORB exit trade to Firestore.
+
+    Args:
+        trade_id: Trade ID from entry
+        action: Exit action ('EXIT_LONG' or 'EXIT_SHORT')
+        side: Order side ('sell' or 'buy')
+        exit_price: Price at exit
+        realized_pnl: Realized P&L
+        reason: Exit reason ('TP hit' or 'SL hit')
+        exit_time_ist: IST time string
+
+    Returns:
+        Document ID if successful, None otherwise
+    """
+    global _firestore_client, _firestore_enabled, _firestore_collection
+
+    if not _firestore_enabled or _firestore_client is None:
+        logger.debug("Firestore journaling disabled, skipping exit journal")
+        return None
+
+    try:
+        from firebase_admin import firestore
+
+        exit_timestamp = datetime.utcnow()
+        exit_event = {
+            "timestamp": exit_timestamp,
+            "action": action,
+            "reason": reason,
+            "exit_price": exit_price,
+            "realized_pnl": realized_pnl,
+        }
+
+        update_data = {
+            "status": "CLOSED",
+            "exit_timestamp": exit_timestamp,
+            "exit_action": action,
+            "exit_price": exit_price,
+            "realized_pnl": realized_pnl,
+            "exit_reason": reason,
+            "exit_time_ist": exit_time_ist,
+            "events": firestore.ArrayUnion([exit_event]),
+        }
+        update_data.update(kwargs)
+        update_data = {k: v for k, v in update_data.items() if v is not None}
+
+        doc_ref = _firestore_client.collection(_firestore_collection).document(trade_id)
+        doc_ref.set(update_data, merge=True)
+        logger.info(f"[OK] Gold ORB CLOSED in Firestore: {trade_id} | {reason} | PnL: ${realized_pnl:+,.2f}")
+        return trade_id
+    except Exception as e:
+        logger.error(f"Failed to journal Gold ORB exit to Firestore: {e}", exc_info=True)
+        return None
+
