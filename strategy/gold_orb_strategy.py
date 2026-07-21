@@ -131,6 +131,23 @@ class GoldOrbStrategy:
         return None, ""
 
 
+    def update_position_state(
+        self,
+        action: str,
+        price: float = 0.0,
+        reason: str = "",
+    ):
+        """Called after order execution to record state, journal, and alert."""
+        dt_ist = datetime.now(tz=IST)
+        time_str = dt_ist.strftime("%d-%m-%y %H:%M IST")
+
+        if action == "ENTRY_LONG":
+            self._open_trade("long", price, reason, time_str)
+        elif action == "ENTRY_SHORT":
+            self._open_trade("short", price, reason, time_str)
+        elif action in ("EXIT_LONG", "EXIT_SHORT"):
+            self._close_trade(price, reason, time_str)
+
     def close_eod_position(self, client, product_id: int, current_price: float):
         """
         Close any remaining open position at End-of-Day (05:30 IST / before next ORB).
@@ -159,15 +176,6 @@ class GoldOrbStrategy:
         action = "EXIT_LONG" if self.current_position == 1 else "EXIT_SHORT"
         self.update_position_state(action, price=current_price, reason="EOD Session Close")
 
-        dt_ist = datetime.now(tz=IST)
-        time_str = dt_ist.strftime("%d-%m-%y %H:%M IST")
-
-        if action == "ENTRY_LONG":
-            self._open_trade("long", price, reason, time_str)
-        elif action == "ENTRY_SHORT":
-            self._open_trade("short", price, reason, time_str)
-        elif action in ("EXIT_LONG", "EXIT_SHORT"):
-            self._close_trade(price, reason, time_str)
 
     def run_backtest(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """Run a full candle-by-candle backtest using 0.5% move from ORB close."""
