@@ -910,23 +910,35 @@ class DeltaRestClient:
         Returns:
             List of candle dicts with keys: time, open, high, low, close, volume.
         """
-        import time as _time
+        res_str = str(resolution)
+        if res_str in ("60", "60m", "1h"):
+            res_str = "1h"
+        elif res_str in ("1", "1m"):
+            res_str = "1m"
+        elif res_str in ("5", "5m"):
+            res_str = "5m"
+        elif res_str in ("15", "15m"):
+            res_str = "15m"
+        elif res_str in ("1440", "1d"):
+            res_str = "1d"
 
         if end is None:
-            end = int(_time.time())
+            end = int(time.time())
         if start is None:
-            start = end - resolution * 60 * count
+            start = end - 60 * 60 * count
+
 
         params = {
             "symbol": symbol,
-            "resolution": resolution,
-            "from": start,
-            "to": end,
+            "resolution": res_str,
+            "start": int(start),
+            "end": int(end),
         }
 
-        logger.debug("Fetching candles", symbol=symbol, resolution=resolution)
+        logger.debug("Fetching candles", symbol=symbol, resolution=res_str)
         response = self._make_direct_request("/v2/history/candles", params=params)
         candles = response.get("result", [])
         logger.debug("Fetched candles", symbol=symbol, count=len(candles))
         return cast(List[Dict[str, Any]], candles)
+
 

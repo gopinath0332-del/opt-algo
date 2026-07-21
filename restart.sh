@@ -1,27 +1,38 @@
 #!/bin/bash
 
-# Restart script for Delta Exchange Options Bot on Raspberry Pi / Linux
+# Restart script for Delta Exchange Bots (Options Bot & Gold ORB) on Raspberry Pi / Linux
 
-SERVICE_NAME="options-bot"
+OPTIONS_SERVICE="options-bot"
+GOLD_SERVICE="gold_orb"
 
 echo "=========================================================="
-echo "Restarting Options Bot Service..."
+echo "Restarting Delta Exchange Trading Bot Services..."
 echo "=========================================================="
 
-# 1. Restart systemd service
-sudo systemctl restart $SERVICE_NAME
+# 1. Restart options-bot systemd service
+if systemctl list-unit-files | grep -q "^$OPTIONS_SERVICE.service"; then
+    echo "Restarting $OPTIONS_SERVICE..."
+    sudo systemctl restart $OPTIONS_SERVICE
+fi
 
-# 2. Wait a moment for startup
+# 2. Restart gold_orb systemd service
+if systemctl list-unit-files | grep -q "^$GOLD_SERVICE.service"; then
+    echo "Restarting $GOLD_SERVICE..."
+    sudo systemctl restart $GOLD_SERVICE
+fi
+
+# 3. Wait a moment for startup
 sleep 2
 
-# 3. Check service status
+# 4. Check services status
 echo ""
-echo "Service Status:"
-sudo systemctl status $SERVICE_NAME --no-pager
+echo "Service Statuses:"
+sudo systemctl status $OPTIONS_SERVICE $GOLD_SERVICE --no-pager || true
 
-# 4. Show last 15 lines of logs
+# 5. Show last 15 lines of combined logs
 echo ""
 echo "Recent Logs:"
-sudo journalctl -u $SERVICE_NAME -n 15 --no-pager
+sudo journalctl -u $OPTIONS_SERVICE -u $GOLD_SERVICE -n 15 --no-pager
 
 echo "=========================================================="
+

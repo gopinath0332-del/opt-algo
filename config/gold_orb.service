@@ -1,0 +1,16 @@
+[Unit]
+Description=Delta Exchange Gold ORB Trading Bot (XAUTUSD)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/opt-algo
+ExecStart=/home/pi/opt-algo/venv/bin/python run_gold_orb.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
