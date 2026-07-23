@@ -831,6 +831,7 @@ class DeltaRestClient:
         start_time_us: Optional[int] = None,
         end_time_us: Optional[int] = None,
         page_size: int = 50,
+        fill_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch fill records for a specific product/order from /v2/fills.
 
@@ -838,20 +839,24 @@ class DeltaRestClient:
         reading avg_fill_price from the order state, which can be None on fast
         market orders.
 
+        NOTE: The API returns fills matching the product_id within the time
+        window. Each fill has:
+          - price (str/float): Execution price in option points
+          - size (int): Contracts in this fill
+          - order_id (str): Parent order ID (string, not integer)
+          - side (str): 'buy' or 'sell'
+          - fill_type (str): 'normal' for real trades, 'settlement' for auto-settlement
+
         Args:
             product_id: Option product ID to filter fills.
             order_id: Optional specific order ID to filter fills.
             start_time_us: Start time in microseconds (epoch). Defaults to 60s ago.
             end_time_us: End time in microseconds (epoch). Defaults to now.
             page_size: Number of records per page (max 100).
+            fill_type: Optional filter: 'normal' for trades, 'settlement' for expiry fills.
 
         Returns:
-            List of fill dicts. Each fill contains at minimum:
-              - fill_price (str/float): Execution price in option points
-              - fill_quantity (int): Contracts filled in this fill
-              - order_id (int): Parent order ID
-              - side (str): 'buy' or 'sell'
-            Returns empty list on any failure.
+            List of fill dicts. Returns empty list on any failure.
         """
         now_us = int(time.time() * 1_000_000)
         params: Dict[str, Any] = {
@@ -868,10 +873,17 @@ class DeltaRestClient:
             fills = response.get("result", []) if isinstance(response, dict) else []
             if not isinstance(fills, list):
                 fills = []
+            # Filter by fill_type if requested
+            if fill_type is not None:
+                fills = [f for f in fills if f.get("fill_type") == fill_type]
+            # Filter by order_id (API may return all fills for the product window)
+            if order_id is not None:
+                fills = [f for f in fills if str(f.get("order_id")) == str(order_id)]
             logger.info(
                 "Fetched fills from exchange",
                 product_id=product_id,
                 order_id=order_id,
+                fill_type=fill_type,
                 count=len(fills),
             )
             return fills
@@ -882,9 +894,11 @@ class DeltaRestClient:
     def get_weighted_avg_fill_price(self, fills: List[Dict[str, Any]]) -> Optional[float]:
         """Compute the true weighted-average fill price from a list of fill records.
 
+        Delta Exchange /v2/fills returns fills with 'price' and 'size' fields
+        (not 'fill_price' / 'fill_quantity').
+
         Args:
-            fills: List of fill dicts from get_fills(), each with 'fill_price'
-                   and 'fill_quantity' (or 'size') fields.
+            fills: List of fill dicts from get_fills().
 
         Returns:
             Weighted average fill price, or None if fills is empty / all zero qty.
@@ -894,8 +908,9 @@ class DeltaRestClient:
         total_qty = 0.0
         total_value = 0.0
         for f in fills:
-            price = float(f.get("fill_price") or f.get("price") or 0)
-            qty = float(f.get("fill_quantity") or f.get("size") or 0)
+            # Delta Exchange uses 'price' and 'size' (not 'fill_price'/'fill_quantity')
+            price = float(f.get("price") or f.get("fill_price") or 0)
+            qty = float(f.get("size") or f.get("fill_quantity") or 0)
             if price > 0 and qty > 0:
                 total_qty += qty
                 total_value += price * qty
@@ -909,55 +924,52 @@ class DeltaRestClient:
         end_time_us: int,
         product_id: int,
     ) -> Optional[float]:
-        """Fetch the actual settlement PnL amount credited by the exchange for
-        an auto-settled (held-to-expiry) options position.
+        """Fetch the actual settlement price for an auto-settled options position
+        from /v2/fills (fill_type='settlement').
 
-        Queries /v2/wallet/transactions for types 'pnl' and 'settlement_pnl'
-        (Delta Exchange uses 'pnl' for options settlement credits/debits).
+        For options held to expiry, Delta Exchange creates a settlement fill
+        with fill_type='settlement' and price=<settlement_price_in_points>.
+        The wallet transaction type is 'settlement' (not 'pnl' or 'settlement_pnl').
 
         Args:
             start_time_us: Start time in microseconds.
             end_time_us: End time in microseconds.
-            product_id: Option product ID to filter results.
+            product_id: Option product ID.
 
         Returns:
-            Net settlement PnL in USD (positive = credit, negative = debit),
-            or None if no settlement transaction was found.
+            Settlement price in points (what the option was worth at expiry),
+            or None if no settlement fill found.
         """
-        # Delta Exchange posts settlement under transaction_type='pnl'
-        # Try both known type strings for robustness.
-        settlement_amount: Optional[float] = None
-        for txn_type in ("pnl", "settlement_pnl"):
-            try:
-                txns = self.get_wallet_transactions(
-                    transaction_types=txn_type,
-                    start_time_us=start_time_us,
-                    end_time_us=end_time_us,
+        try:
+            settlement_fills = self.get_fills(
+                product_id=product_id,
+                start_time_us=start_time_us,
+                end_time_us=end_time_us,
+                fill_type="settlement",
+            )
+            if settlement_fills:
+                # Settlement fills have price = settlement value in points
+                # There is typically 1 fill for the full position size
+                settle_price = self.get_weighted_avg_fill_price(settlement_fills)
+                logger.info(
+                    f"Settlement fill found: price={settle_price} pts "
+                    f"({len(settlement_fills)} fill(s))",
                     product_id=product_id,
                 )
-                if txns:
-                    total = sum(float(t.get("amount", 0)) for t in txns)
-                    logger.info(
-                        f"Settlement PnL from ledger (type={txn_type}): "
-                        f"${total:.4f} ({len(txns)} transaction(s))",
-                        product_id=product_id,
-                    )
-                    settlement_amount = total
-                    break
-            except Exception as e:
+                return settle_price
+            else:
                 logger.warning(
-                    f"get_settlement_pnl_transactions failed (type={txn_type}): {e}",
+                    "No settlement fills found for product — "
+                    "settlement may not have processed yet.",
                     product_id=product_id,
                 )
-                continue
-
-        if settlement_amount is None:
+                return None
+        except Exception as e:
             logger.warning(
-                "No settlement PnL transactions found for product — "
-                "settlement may not have posted yet or transaction type is different.",
+                f"get_settlement_pnl_transactions failed: {e}",
                 product_id=product_id,
             )
-        return settlement_amount
+            return None
 
     def get_order(self, order_id: int) -> Dict[str, Any]:
         """Get order details by ID.

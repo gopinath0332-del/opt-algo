@@ -512,7 +512,8 @@ class ShortStraddleStrategy:
                     # Secondary: get_order avg_fill_price
                     try:
                         call_order_details = self.client.get_order(call_order_id)
-                        avg_fill = call_order_details.get("avg_fill_price")
+                        # NOTE: Delta Exchange API uses 'average_fill_price' (not 'avg_fill_price')
+                        avg_fill = call_order_details.get("average_fill_price")
                         if avg_fill:
                             call_fill_price = float(avg_fill)
                             logger.info(
@@ -521,7 +522,7 @@ class ShortStraddleStrategy:
                             )
                         else:
                             logger.warning(
-                                f"[ENTRY FILL] Call: avg_fill_price missing from order — "
+                                f"[ENTRY FILL] Call: average_fill_price missing from order — "
                                 f"keeping mark snapshot ${self.call_entry_mark:.4f}. "
                                 f"Raw order keys: {list(call_order_details.keys())}"
                             )
@@ -554,7 +555,8 @@ class ShortStraddleStrategy:
                     # Secondary: get_order avg_fill_price
                     try:
                         put_order_details = self.client.get_order(put_order_id)
-                        avg_fill = put_order_details.get("avg_fill_price")
+                        # NOTE: Delta Exchange API uses 'average_fill_price' (not 'avg_fill_price')
+                        avg_fill = put_order_details.get("average_fill_price")
                         if avg_fill:
                             put_fill_price = float(avg_fill)
                             logger.info(
@@ -563,7 +565,7 @@ class ShortStraddleStrategy:
                             )
                         else:
                             logger.warning(
-                                f"[ENTRY FILL] Put: avg_fill_price missing from order — "
+                                f"[ENTRY FILL] Put: average_fill_price missing from order — "
                                 f"keeping mark snapshot ${self.put_entry_mark:.4f}. "
                                 f"Raw order keys: {list(put_order_details.keys())}"
                             )
@@ -816,7 +818,8 @@ class ShortStraddleStrategy:
                     else:
                         try:
                             call_exit_details = self.client.get_order(int(call_exit_order_id))
-                            avg_fill = call_exit_details.get("avg_fill_price")
+                            # NOTE: Delta Exchange API uses 'average_fill_price' (not 'avg_fill_price')
+                            avg_fill = call_exit_details.get("average_fill_price")
                             if avg_fill:
                                 call_exit_fill = float(avg_fill)
                                 logger.info(
@@ -825,7 +828,7 @@ class ShortStraddleStrategy:
                                 )
                             else:
                                 logger.warning(
-                                    f"[EXIT FILL] Call: avg_fill_price missing — "
+                                    f"[EXIT FILL] Call: average_fill_price missing — "
                                     f"keeping mark snapshot ${exit_call_mark:.4f}. "
                                     f"Raw order keys: {list(call_exit_details.keys())}"
                                 )
@@ -854,7 +857,8 @@ class ShortStraddleStrategy:
                     else:
                         try:
                             put_exit_details = self.client.get_order(int(put_exit_order_id))
-                            avg_fill = put_exit_details.get("avg_fill_price")
+                            # NOTE: Delta Exchange API uses 'average_fill_price' (not 'avg_fill_price')
+                            avg_fill = put_exit_details.get("average_fill_price")
                             if avg_fill:
                                 put_exit_fill = float(avg_fill)
                                 logger.info(
@@ -863,7 +867,7 @@ class ShortStraddleStrategy:
                                 )
                             else:
                                 logger.warning(
-                                    f"[EXIT FILL] Put: avg_fill_price missing — "
+                                    f"[EXIT FILL] Put: average_fill_price missing — "
                                     f"keeping mark snapshot ${exit_put_mark:.4f}. "
                                     f"Raw order keys: {list(put_exit_details.keys())}"
                                 )
@@ -899,25 +903,12 @@ class ShortStraddleStrategy:
                 product_id=self.put_product_id,
             )
 
-            # Convert USD settlement amount → points
-            # Settlement PnL = (strike - fill) × qty × contract_value  →  reverse: pts = usd / (qty × cv)
-            lot_cv = self.lot_size * self.contract_value
-            if call_settle_usd is not None and lot_cv > 0:
-                # For short options: settlement credit = premium collected - intrinsic payout
-                # The exchange posts the NET pnl per position. Convert to exit points:
-                # exit_pts = entry_pts - (net_usd / lot_cv)
-                # But we want the intrinsic payout (what we owe), so:
-                # payout_usd = entry_premium_usd - net_settle_usd
-                # payout_pts = payout_usd / lot_cv
-                # Simpler: exit_call_pts = entry_premium - (net_settle / lot_cv)
-                # net_settle for a short = credit received = premium_at_entry - intrinsic_payout
-                # So intrinsic_payout_pts = entry_call_pts - (net_settle_usd / lot_cv)
-                entry_call_usd = self.call_entry_premium * lot_cv
-                call_intrinsic_usd = entry_call_usd - call_settle_usd
-                exit_call_premium = max(0.0, call_intrinsic_usd / lot_cv)
+            # get_settlement_pnl_transactions() now returns settlement price in POINTS
+            # directly from /v2/fills (fill_type='settlement'). No USD conversion needed.
+            if call_settle_usd is not None:
+                exit_call_premium = float(call_settle_usd)  # already in points
                 logger.info(
-                    f"[EXIT SETTLE] Call: settlement_net_usd=${call_settle_usd:.4f} → "
-                    f"intrinsic_payout_pts={exit_call_premium:.4f} (exchange ledger)"
+                    f"[EXIT SETTLE] Call: settlement_price={exit_call_premium:.4f} pts (exchange fill)"
                 )
             else:
                 # Fallback: intrinsic from live spot (with clear warning)
@@ -932,13 +923,10 @@ class ShortStraddleStrategy:
                     exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
                     logger.warning(f"[EXIT SETTLE] Call: using mark price fallback ${exit_call_premium:.4f}")
 
-            if put_settle_usd is not None and lot_cv > 0:
-                entry_put_usd = self.put_entry_premium * lot_cv
-                put_intrinsic_usd = entry_put_usd - put_settle_usd
-                exit_put_premium = max(0.0, put_intrinsic_usd / lot_cv)
+            if put_settle_usd is not None:
+                exit_put_premium = float(put_settle_usd)  # already in points
                 logger.info(
-                    f"[EXIT SETTLE] Put: settlement_net_usd=${put_settle_usd:.4f} → "
-                    f"intrinsic_payout_pts={exit_put_premium:.4f} (exchange ledger)"
+                    f"[EXIT SETTLE] Put: settlement_price={exit_put_premium:.4f} pts (exchange fill)"
                 )
             else:
                 try:
