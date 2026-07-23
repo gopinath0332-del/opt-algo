@@ -478,24 +478,100 @@ class ShortStraddleStrategy:
 
         self.is_position_open = True
 
-        # Re-fetch actual execution fill prices from the filled orders
+        # ---------------------------------------------------------------
+        # Fetch actual execution fill prices from exchange
+        # Priority: get_fills() → get_order().avg_fill_price → mark snapshot
+        # ---------------------------------------------------------------
         if self.mode != "paper":
-            try:
-                time.sleep(2)  # Wait for exchange to process and settle fills
-                if call_order and call_order.get("id"):
-                    call_order_details = self.client.get_order(call_order.get("id"))
-                    avg_fill = call_order_details.get("avg_fill_price")
-                    if avg_fill:
-                        self.call_entry_premium = float(avg_fill)
-                        logger.info(f"Actual Call entry fill price: ${self.call_entry_premium:.4f}")
-                if put_order and put_order.get("id"):
-                    put_order_details = self.client.get_order(put_order.get("id"))
-                    avg_fill = put_order_details.get("avg_fill_price")
-                    if avg_fill:
-                        self.put_entry_premium = float(avg_fill)
-                        logger.info(f"Actual Put entry fill price: ${self.put_entry_premium:.4f}")
-            except Exception as e:
-                logger.warning(f"Failed to fetch actual entry fill prices from orders: {e}")
+            fill_wait_sec = 3
+            logger.info(f"Waiting {fill_wait_sec}s for fills to propagate...")
+            time.sleep(fill_wait_sec)
+
+            now_us = int(time.time() * 1_000_000)
+
+            # --- Call leg ---
+            call_fill_price: Optional[float] = None
+            if call_order and call_order.get("id"):
+                call_order_id = int(call_order.get("id"))
+
+                # Primary: /v2/fills
+                call_fills = self.client.get_fills(
+                    product_id=self.call_product_id,
+                    order_id=call_order_id,
+                    start_time_us=self.entry_time_us - 10 * 1_000_000,
+                    end_time_us=now_us,
+                )
+                call_fill_price = self.client.get_weighted_avg_fill_price(call_fills)
+                if call_fill_price is not None:
+                    logger.info(
+                        f"[ENTRY FILL] Call: ${call_fill_price:.4f} "
+                        f"(exchange fills, {len(call_fills)} fill(s)) | "
+                        f"Mark was: ${self.call_entry_mark:.4f}"
+                    )
+                else:
+                    # Secondary: get_order avg_fill_price
+                    try:
+                        call_order_details = self.client.get_order(call_order_id)
+                        avg_fill = call_order_details.get("avg_fill_price")
+                        if avg_fill:
+                            call_fill_price = float(avg_fill)
+                            logger.info(
+                                f"[ENTRY FILL] Call: ${call_fill_price:.4f} "
+                                f"(get_order fallback) | Mark was: ${self.call_entry_mark:.4f}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[ENTRY FILL] Call: avg_fill_price missing from order — "
+                                f"keeping mark snapshot ${self.call_entry_mark:.4f}. "
+                                f"Raw order keys: {list(call_order_details.keys())}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[ENTRY FILL] Call: get_order failed: {e} — keeping mark snapshot")
+
+            if call_fill_price is not None:
+                self.call_entry_premium = call_fill_price
+
+            # --- Put leg ---
+            put_fill_price: Optional[float] = None
+            if put_order and put_order.get("id"):
+                put_order_id = int(put_order.get("id"))
+
+                # Primary: /v2/fills
+                put_fills = self.client.get_fills(
+                    product_id=self.put_product_id,
+                    order_id=put_order_id,
+                    start_time_us=self.entry_time_us - 10 * 1_000_000,
+                    end_time_us=now_us,
+                )
+                put_fill_price = self.client.get_weighted_avg_fill_price(put_fills)
+                if put_fill_price is not None:
+                    logger.info(
+                        f"[ENTRY FILL] Put: ${put_fill_price:.4f} "
+                        f"(exchange fills, {len(put_fills)} fill(s)) | "
+                        f"Mark was: ${self.put_entry_mark:.4f}"
+                    )
+                else:
+                    # Secondary: get_order avg_fill_price
+                    try:
+                        put_order_details = self.client.get_order(put_order_id)
+                        avg_fill = put_order_details.get("avg_fill_price")
+                        if avg_fill:
+                            put_fill_price = float(avg_fill)
+                            logger.info(
+                                f"[ENTRY FILL] Put: ${put_fill_price:.4f} "
+                                f"(get_order fallback) | Mark was: ${self.put_entry_mark:.4f}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[ENTRY FILL] Put: avg_fill_price missing from order — "
+                                f"keeping mark snapshot ${self.put_entry_mark:.4f}. "
+                                f"Raw order keys: {list(put_order_details.keys())}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[ENTRY FILL] Put: get_order failed: {e} — keeping mark snapshot")
+
+            if put_fill_price is not None:
+                self.put_entry_premium = put_fill_price
 
         # Calculate entry slippage: (Mark - Fill) since we sell options
         call_entry_slippage = self.call_entry_mark - self.call_entry_premium
@@ -710,42 +786,172 @@ class ShortStraddleStrategy:
                 logger.error(f"Failed to close Put position: {e}")
                 self.notifier.send_error("Put Exit Failed", str(e))
 
-            # Query actual exit fill prices
+            # ---------------------------------------------------------------
+            # Fetch actual exit fill prices from exchange
+            # Priority: get_fills() → get_order().avg_fill_price → mark snapshot
+            # ---------------------------------------------------------------
             if self.mode != "paper":
-                try:
-                    logger.info("Waiting 2 seconds to fetch exit fill prices...")
-                    time.sleep(2)
-                    if call_exit_order_id:
-                        call_exit_details = self.client.get_order(call_exit_order_id)
-                        avg_fill = call_exit_details.get("avg_fill_price")
-                        if avg_fill:
-                            exit_call_premium = float(avg_fill)
-                            logger.info(f"Actual Call exit fill price: ${exit_call_premium:.4f}")
-                    if put_exit_order_id:
-                        put_exit_details = self.client.get_order(put_exit_order_id)
-                        avg_fill = put_exit_details.get("avg_fill_price")
-                        if avg_fill:
-                            exit_put_premium = float(avg_fill)
-                            logger.info(f"Actual Put exit fill price: ${exit_put_premium:.4f}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch actual exit fill prices: {e}")
+                fill_wait_sec = 3
+                logger.info(f"Waiting {fill_wait_sec}s for exit fills to propagate...")
+                time.sleep(fill_wait_sec)
+
+                now_us_exit = int(time.time() * 1_000_000)
+
+                # --- Call exit leg ---
+                call_exit_fill: Optional[float] = None
+                if call_exit_order_id:
+                    call_exit_fills = self.client.get_fills(
+                        product_id=self.call_product_id,
+                        order_id=int(call_exit_order_id),
+                        start_time_us=self.entry_time_us,
+                        end_time_us=now_us_exit,
+                    )
+                    call_exit_fill = self.client.get_weighted_avg_fill_price(call_exit_fills)
+                    if call_exit_fill is not None:
+                        logger.info(
+                            f"[EXIT FILL] Call: ${call_exit_fill:.4f} "
+                            f"(exchange fills, {len(call_exit_fills)} fill(s)) | "
+                            f"Mark was: ${exit_call_mark:.4f}"
+                        )
+                    else:
+                        try:
+                            call_exit_details = self.client.get_order(int(call_exit_order_id))
+                            avg_fill = call_exit_details.get("avg_fill_price")
+                            if avg_fill:
+                                call_exit_fill = float(avg_fill)
+                                logger.info(
+                                    f"[EXIT FILL] Call: ${call_exit_fill:.4f} "
+                                    f"(get_order fallback) | Mark was: ${exit_call_mark:.4f}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[EXIT FILL] Call: avg_fill_price missing — "
+                                    f"keeping mark snapshot ${exit_call_mark:.4f}. "
+                                    f"Raw order keys: {list(call_exit_details.keys())}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"[EXIT FILL] Call: get_order failed: {e} — keeping mark snapshot")
+
+                if call_exit_fill is not None:
+                    exit_call_premium = call_exit_fill
+
+                # --- Put exit leg ---
+                put_exit_fill: Optional[float] = None
+                if put_exit_order_id:
+                    put_exit_fills = self.client.get_fills(
+                        product_id=self.put_product_id,
+                        order_id=int(put_exit_order_id),
+                        start_time_us=self.entry_time_us,
+                        end_time_us=now_us_exit,
+                    )
+                    put_exit_fill = self.client.get_weighted_avg_fill_price(put_exit_fills)
+                    if put_exit_fill is not None:
+                        logger.info(
+                            f"[EXIT FILL] Put: ${put_exit_fill:.4f} "
+                            f"(exchange fills, {len(put_exit_fills)} fill(s)) | "
+                            f"Mark was: ${exit_put_mark:.4f}"
+                        )
+                    else:
+                        try:
+                            put_exit_details = self.client.get_order(int(put_exit_order_id))
+                            avg_fill = put_exit_details.get("avg_fill_price")
+                            if avg_fill:
+                                put_exit_fill = float(avg_fill)
+                                logger.info(
+                                    f"[EXIT FILL] Put: ${put_exit_fill:.4f} "
+                                    f"(get_order fallback) | Mark was: ${exit_put_mark:.4f}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[EXIT FILL] Put: avg_fill_price missing — "
+                                    f"keeping mark snapshot ${exit_put_mark:.4f}. "
+                                    f"Raw order keys: {list(put_exit_details.keys())}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"[EXIT FILL] Put: get_order failed: {e} — keeping mark snapshot")
+
+                if put_exit_fill is not None:
+                    exit_put_premium = put_exit_fill
+
         elif let_settle:
             logger.info("Holding straddle to expiry (auto-settlement). No closing orders will be placed.")
-            try:
-                expiry_spot = self.client.get_spot_price(self.underlying)
-                if expiry_spot > 0:
+            # ---------------------------------------------------------------
+            # Fetch actual settlement values from the exchange ledger.
+            # Delta Exchange credits/debits the settlement as a 'pnl'
+            # wallet transaction — this reflects the real index settlement
+            # price, NOT the live API spot at expiry time.
+            # ---------------------------------------------------------------
+            settle_wait_sec = 20
+            logger.info(f"Waiting {settle_wait_sec}s for settlement transactions to post to ledger...")
+            time.sleep(settle_wait_sec)
+
+            now_us_settle = int(time.time() * 1_000_000)
+            start_us_settle = self.entry_time_us - (60 * 1_000_000)
+
+            call_settle_usd = self.client.get_settlement_pnl_transactions(
+                start_time_us=start_us_settle,
+                end_time_us=now_us_settle,
+                product_id=self.call_product_id,
+            )
+            put_settle_usd = self.client.get_settlement_pnl_transactions(
+                start_time_us=start_us_settle,
+                end_time_us=now_us_settle,
+                product_id=self.put_product_id,
+            )
+
+            # Convert USD settlement amount → points
+            # Settlement PnL = (strike - fill) × qty × contract_value  →  reverse: pts = usd / (qty × cv)
+            lot_cv = self.lot_size * self.contract_value
+            if call_settle_usd is not None and lot_cv > 0:
+                # For short options: settlement credit = premium collected - intrinsic payout
+                # The exchange posts the NET pnl per position. Convert to exit points:
+                # exit_pts = entry_pts - (net_usd / lot_cv)
+                # But we want the intrinsic payout (what we owe), so:
+                # payout_usd = entry_premium_usd - net_settle_usd
+                # payout_pts = payout_usd / lot_cv
+                # Simpler: exit_call_pts = entry_premium - (net_settle / lot_cv)
+                # net_settle for a short = credit received = premium_at_entry - intrinsic_payout
+                # So intrinsic_payout_pts = entry_call_pts - (net_settle_usd / lot_cv)
+                entry_call_usd = self.call_entry_premium * lot_cv
+                call_intrinsic_usd = entry_call_usd - call_settle_usd
+                exit_call_premium = max(0.0, call_intrinsic_usd / lot_cv)
+                logger.info(
+                    f"[EXIT SETTLE] Call: settlement_net_usd=${call_settle_usd:.4f} → "
+                    f"intrinsic_payout_pts={exit_call_premium:.4f} (exchange ledger)"
+                )
+            else:
+                # Fallback: intrinsic from live spot (with clear warning)
+                try:
+                    expiry_spot = self.client.get_spot_price(self.underlying)
                     exit_call_premium = max(0.0, expiry_spot - self.atm_strike)
-                    exit_put_premium = max(0.0, self.atm_strike - expiry_spot)
-                    logger.info(
-                        f"Auto-settlement settlement values: spot=${expiry_spot:,.2f}, Strike={self.atm_strike:.0f} -> "
-                        f"Call Settlement=${exit_call_premium:.4f}, Put Settlement=${exit_put_premium:.4f}"
+                    logger.warning(
+                        f"[EXIT SETTLE] Call: ledger not available — using spot-based intrinsic "
+                        f"${exit_call_premium:.4f} (spot={expiry_spot:,.2f}). MAY DIFFER FROM EXCHANGE."
                     )
-                else:
-                    raise ValueError("Spot price returned 0")
-            except Exception as e:
-                logger.warning(f"Failed to calculate settlement intrinsic values: {e}. Falling back to mark prices.")
-                exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
-                exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
+                except Exception:
+                    exit_call_premium = self._get_current_premium(self.call_product_id, self.call_symbol)
+                    logger.warning(f"[EXIT SETTLE] Call: using mark price fallback ${exit_call_premium:.4f}")
+
+            if put_settle_usd is not None and lot_cv > 0:
+                entry_put_usd = self.put_entry_premium * lot_cv
+                put_intrinsic_usd = entry_put_usd - put_settle_usd
+                exit_put_premium = max(0.0, put_intrinsic_usd / lot_cv)
+                logger.info(
+                    f"[EXIT SETTLE] Put: settlement_net_usd=${put_settle_usd:.4f} → "
+                    f"intrinsic_payout_pts={exit_put_premium:.4f} (exchange ledger)"
+                )
+            else:
+                try:
+                    expiry_spot = self.client.get_spot_price(self.underlying)
+                    exit_put_premium = max(0.0, self.atm_strike - expiry_spot)
+                    logger.warning(
+                        f"[EXIT SETTLE] Put: ledger not available — using spot-based intrinsic "
+                        f"${exit_put_premium:.4f} (spot={expiry_spot:,.2f}). MAY DIFFER FROM EXCHANGE."
+                    )
+                except Exception:
+                    exit_put_premium = self._get_current_premium(self.put_product_id, self.put_symbol)
+                    logger.warning(f"[EXIT SETTLE] Put: using mark price fallback ${exit_put_premium:.4f}")
+
         else:
             logger.warning("[DISABLED] Order placement disabled — simulating exit")
 
@@ -767,6 +973,43 @@ class ShortStraddleStrategy:
         exit_total = exit_call_premium + exit_put_premium
         pnl_points = self.entry_premium - exit_total
         realized_pnl_usd = pnl_points * self.lot_size * self.contract_value
+
+        # Cross-check realized PnL against exchange ledger 'pnl' transactions
+        # For auto-settle this is already embedded in settlement_pnl_transactions above.
+        # For early-close, query the 'realized_pnl' transaction type.
+        exchange_realized_pnl: Optional[float] = None
+        if self.order_placement_enabled and self.mode != "paper" and not let_settle:
+            try:
+                now_us_pnl = int(time.time() * 1_000_000)
+                start_us_pnl = self.entry_time_us - (60 * 1_000_000)
+                for pnl_type in ("realized_pnl", "pnl"):
+                    call_pnl_txns = self.client.get_wallet_transactions(
+                        transaction_types=pnl_type,
+                        start_time_us=start_us_pnl,
+                        end_time_us=now_us_pnl,
+                        product_id=self.call_product_id,
+                    )
+                    put_pnl_txns = self.client.get_wallet_transactions(
+                        transaction_types=pnl_type,
+                        start_time_us=start_us_pnl,
+                        end_time_us=now_us_pnl,
+                        product_id=self.put_product_id,
+                    )
+                    if call_pnl_txns or put_pnl_txns:
+                        exchange_realized_pnl = (
+                            sum(float(t.get("amount", 0)) for t in call_pnl_txns)
+                            + sum(float(t.get("amount", 0)) for t in put_pnl_txns)
+                        )
+                        logger.info(
+                            f"[PNL CROSS-CHECK] Exchange ledger PnL (type={pnl_type}): "
+                            f"${exchange_realized_pnl:.4f} | Calculated: ${realized_pnl_usd:.4f} | "
+                            f"Diff: ${exchange_realized_pnl - realized_pnl_usd:.4f}"
+                        )
+                        break
+                if exchange_realized_pnl is None:
+                    logger.info("[PNL CROSS-CHECK] No realized_pnl/pnl transactions found — using calculated value")
+            except Exception as e:
+                logger.warning(f"[PNL CROSS-CHECK] Failed to fetch exchange PnL: {e}")
 
         self.is_position_open = False
 
@@ -829,7 +1072,7 @@ class ShortStraddleStrategy:
             f"PnL Points: {pnl_points:+.4f}, PnL USD: ${realized_pnl_usd:+.4f}, Fees: ${trading_fees:.4f}"
         )
 
-        # Send exit notification (pass USD P&L and fees)
+        # Send exit notification (pass USD P&L, fees, and exchange cross-check PnL)
         self.notifier.send_exit_alert(
             underlying=self.underlying,
             exit_reason=reason,
@@ -843,6 +1086,8 @@ class ShortStraddleStrategy:
             mode=self.mode,
             exit_slippage_usd=exit_slippage_usd,
             total_slippage_usd=total_slippage_usd,
+            exchange_realized_pnl=exchange_realized_pnl,
+            is_exchange_sourced=(let_settle or exchange_realized_pnl is not None),
         )
 
         # Journal to Firestore (pnl in USD, additional metrics in kwargs)
