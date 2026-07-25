@@ -1,11 +1,13 @@
 #!/bin/bash
 
 # Deployment script for Delta Exchange Options Bot on Raspberry Pi / Linux
+# NOTE: Gold ORB is currently DISABLED. Set GOLD_ORB_ENABLED=true below to re-enable.
 
 set -e
 
 PROJECT_DIR="/home/pi/opt-algo"
 SERVICE_NAME="options-bot"
+GOLD_ORB_ENABLED=false   # Set to true to enable Gold ORB service on deploy
 
 echo "=========================================================="
 echo "Starting Delta Exchange Options Bot Deployment"
@@ -52,26 +54,46 @@ echo "Step 5: Installing Python requirements..."
 "$PROJECT_DIR/venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
 
 # 6. Setup Systemd services
-echo "Step 6: Configuring systemd services (options-bot & gold_orb)..."
+echo "Step 6: Configuring systemd services..."
 sudo cp "$PROJECT_DIR/config/options-bot.service" "/etc/systemd/system/options-bot.service"
+
 if [ -f "$PROJECT_DIR/config/gold_orb.service" ]; then
     sudo cp "$PROJECT_DIR/config/gold_orb.service" "/etc/systemd/system/gold_orb.service"
+    echo "Gold ORB service file installed (not enabled — GOLD_ORB_ENABLED=$GOLD_ORB_ENABLED)."
 fi
+
 sudo systemctl daemon-reload
 
+# 7. Enable & start services
+echo "Step 7: Enabling and starting services..."
+sudo systemctl enable --now options-bot
+echo "✅ options-bot enabled and started."
+
+if [ "$GOLD_ORB_ENABLED" = true ]; then
+    sudo systemctl enable --now gold_orb
+    echo "✅ gold_orb enabled and started."
+else
+    # Make sure gold_orb is stopped and disabled
+    sudo systemctl stop gold_orb 2>/dev/null || true
+    sudo systemctl disable gold_orb 2>/dev/null || true
+    echo "⏸️  gold_orb is disabled (GOLD_ORB_ENABLED=false). Skipped."
+fi
+
 echo "=========================================================="
-echo "Deployment structure complete!"
+echo "Deployment complete!"
 echo "=========================================================="
 echo "Next steps:"
-echo "  1. Edit your production configuration: nano $PROJECT_DIR/config/.env"
-echo "  2. Test the bots once in paper/dry-run mode:"
+echo "  1. Verify config:  nano $PROJECT_DIR/config/.env"
+echo "  2. Test options bot (dry-run):"
 echo "     $PROJECT_DIR/venv/bin/python $PROJECT_DIR/main.py --once --paper"
-echo "     $PROJECT_DIR/venv/bin/python $PROJECT_DIR/run_gold_orb.py --paper"
-echo "  3. Start the background services:"
-echo "     sudo systemctl enable --now options-bot"
-echo "     sudo systemctl enable --now gold_orb"
-echo "  4. Check the service statuses and logs:"
-echo "     sudo systemctl status options-bot gold_orb"
-echo "     journalctl -u options-bot -u gold_orb -f"
+echo "  3. Check service status and logs:"
+echo "     sudo systemctl status options-bot"
+echo "     journalctl -u options-bot -f"
+if [ "$GOLD_ORB_ENABLED" = false ]; then
+    echo ""
+    echo "  To re-enable Gold ORB later:"
+    echo "     Set GOLD_ORB_ENABLED=true in deploy.sh and re-run, OR manually:"
+    echo "     sudo systemctl enable --now gold_orb"
+fi
 echo "=========================================================="
 
