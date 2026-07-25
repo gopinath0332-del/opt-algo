@@ -33,14 +33,12 @@ logger = get_logger(__name__)
 # IST = UTC + 5:30
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# ORB candle opens at 06:30 IST every day.
-# In epoch-normalized hourly data, the 06:30 IST candle decodes to hour=6, minute=0.
-ORB_HOUR_IST = 6
-ORB_MINUTE_IST = 0
-
+# Default fallbacks (primary config loaded from settings.yaml)
+DEFAULT_ORB_HOUR_IST = 6
+DEFAULT_ORB_MINUTE_IST = 30
+DEFAULT_FIXED_LOT_SIZE = 1000
+DEFAULT_LEVERAGE = 100
 STRATEGY_NAME = "Gold ORB"
-FIXED_LOT_SIZE = 1000
-LEVERAGE = 100
 
 
 class GoldOrbStrategy:
@@ -57,8 +55,8 @@ class GoldOrbStrategy:
         self.allow_long = self.trade_mode in ("Long", "Both")
         self.allow_short = self.trade_mode in ("Short", "Both")
 
-        self.fixed_lot_size: int = int(cfg.get("fixed_lot_size", FIXED_LOT_SIZE))
-        self.leverage: int = int(cfg.get("leverage", LEVERAGE))
+        self.fixed_lot_size: int = int(cfg.get("fixed_lot_size", DEFAULT_FIXED_LOT_SIZE))
+        self.leverage: int = int(cfg.get("leverage", DEFAULT_LEVERAGE))
         self.timeframe = "1h"
         self.indicator_label = "ORB"
 
@@ -70,6 +68,8 @@ class GoldOrbStrategy:
         self.trade_taken_today: bool = False
         self.pct_threshold: float = float(cfg.get("pct_threshold", 0.005))  # 0.5% movement threshold
         self.rr_ratio: float = float(cfg.get("rr_ratio", 1.25))              # 1:1.25 Risk/Reward ratio
+        self.orb_start_hour_ist: int = int(cfg.get("orb_start_hour_ist", DEFAULT_ORB_HOUR_IST))
+        self.orb_start_minute_ist: int = int(cfg.get("orb_start_minute_ist", DEFAULT_ORB_MINUTE_IST))
 
 
         # ---- Active Trade State ----
@@ -104,8 +104,8 @@ class GoldOrbStrategy:
 
         # ---- Detect ORB candle ----
         if (
-            candle_dt_ist.hour == ORB_HOUR_IST
-            and candle_dt_ist.minute == ORB_MINUTE_IST
+            candle_dt_ist.hour == self.orb_start_hour_ist
+            and candle_dt_ist.minute == self.orb_start_minute_ist
         ):
             self._set_orb(last, candle_date)
             return None, ""
@@ -199,7 +199,7 @@ class GoldOrbStrategy:
             for i, row in day_df.iterrows():
                 dt_ist = row["_dt_ist"]
 
-                if dt_ist.hour == ORB_HOUR_IST and dt_ist.minute == ORB_MINUTE_IST:
+                if dt_ist.hour == self.orb_start_hour_ist and dt_ist.minute == self.orb_start_minute_ist:
                     orb_row = row
                     continue
 
