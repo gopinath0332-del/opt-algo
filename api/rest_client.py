@@ -824,6 +824,153 @@ class DeltaRestClient:
             logger.warning(f"Could not get mark price for product {product_id}: {e}")
             return 0.0
 
+    def get_fills(
+        self,
+        product_id: int,
+        order_id: Optional[int] = None,
+        start_time_us: Optional[int] = None,
+        end_time_us: Optional[int] = None,
+        page_size: int = 50,
+        fill_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch fill records for a specific product/order from /v2/fills.
+
+        Fills are posted immediately after execution and are more reliable than
+        reading avg_fill_price from the order state, which can be None on fast
+        market orders.
+
+        NOTE: The API returns fills matching the product_id within the time
+        window. Each fill has:
+          - price (str/float): Execution price in option points
+          - size (int): Contracts in this fill
+          - order_id (str): Parent order ID (string, not integer)
+          - side (str): 'buy' or 'sell'
+          - fill_type (str): 'normal' for real trades, 'settlement' for auto-settlement
+
+        Args:
+            product_id: Option product ID to filter fills.
+            order_id: Optional specific order ID to filter fills.
+            start_time_us: Start time in microseconds (epoch). Defaults to 60s ago.
+            end_time_us: End time in microseconds (epoch). Defaults to now.
+            page_size: Number of records per page (max 100).
+            fill_type: Optional filter: 'normal' for trades, 'settlement' for expiry fills.
+
+        Returns:
+            List of fill dicts. Returns empty list on any failure.
+        """
+        now_us = int(time.time() * 1_000_000)
+        params: Dict[str, Any] = {
+            "product_id": product_id,
+            "page_size": page_size,
+            "start_time": start_time_us if start_time_us is not None else now_us - 120 * 1_000_000,
+            "end_time": end_time_us if end_time_us is not None else now_us,
+        }
+        if order_id is not None:
+            params["order_id"] = order_id
+
+        try:
+            response = self._make_auth_request("GET", "/v2/fills", params=params)
+            fills = response.get("result", []) if isinstance(response, dict) else []
+            if not isinstance(fills, list):
+                fills = []
+            # Filter by fill_type if requested
+            if fill_type is not None:
+                fills = [f for f in fills if f.get("fill_type") == fill_type]
+            # Filter by order_id (API may return all fills for the product window)
+            if order_id is not None:
+                fills = [f for f in fills if str(f.get("order_id")) == str(order_id)]
+            logger.info(
+                "Fetched fills from exchange",
+                product_id=product_id,
+                order_id=order_id,
+                fill_type=fill_type,
+                count=len(fills),
+            )
+            return fills
+        except Exception as e:
+            logger.warning(f"get_fills failed for product_id={product_id}, order_id={order_id}: {e}")
+            return []
+
+    def get_weighted_avg_fill_price(self, fills: List[Dict[str, Any]]) -> Optional[float]:
+        """Compute the true weighted-average fill price from a list of fill records.
+
+        Delta Exchange /v2/fills returns fills with 'price' and 'size' fields
+        (not 'fill_price' / 'fill_quantity').
+
+        Args:
+            fills: List of fill dicts from get_fills().
+
+        Returns:
+            Weighted average fill price, or None if fills is empty / all zero qty.
+        """
+        if not fills:
+            return None
+        total_qty = 0.0
+        total_value = 0.0
+        for f in fills:
+            # Delta Exchange uses 'price' and 'size' (not 'fill_price'/'fill_quantity')
+            price = float(f.get("price") or f.get("fill_price") or 0)
+            qty = float(f.get("size") or f.get("fill_quantity") or 0)
+            if price > 0 and qty > 0:
+                total_qty += qty
+                total_value += price * qty
+        if total_qty == 0:
+            return None
+        return total_value / total_qty
+
+    def get_settlement_pnl_transactions(
+        self,
+        start_time_us: int,
+        end_time_us: int,
+        product_id: int,
+    ) -> Optional[float]:
+        """Fetch the actual settlement price for an auto-settled options position
+        from /v2/fills (fill_type='settlement').
+
+        For options held to expiry, Delta Exchange creates a settlement fill
+        with fill_type='settlement' and price=<settlement_price_in_points>.
+        The wallet transaction type is 'settlement' (not 'pnl' or 'settlement_pnl').
+
+        Args:
+            start_time_us: Start time in microseconds.
+            end_time_us: End time in microseconds.
+            product_id: Option product ID.
+
+        Returns:
+            Settlement price in points (what the option was worth at expiry),
+            or None if no settlement fill found.
+        """
+        try:
+            settlement_fills = self.get_fills(
+                product_id=product_id,
+                start_time_us=start_time_us,
+                end_time_us=end_time_us,
+                fill_type="settlement",
+            )
+            if settlement_fills:
+                # Settlement fills have price = settlement value in points
+                # There is typically 1 fill for the full position size
+                settle_price = self.get_weighted_avg_fill_price(settlement_fills)
+                logger.info(
+                    f"Settlement fill found: price={settle_price} pts "
+                    f"({len(settlement_fills)} fill(s))",
+                    product_id=product_id,
+                )
+                return settle_price
+            else:
+                logger.warning(
+                    "No settlement fills found for product — "
+                    "settlement may not have processed yet.",
+                    product_id=product_id,
+                )
+                return None
+        except Exception as e:
+            logger.warning(
+                f"get_settlement_pnl_transactions failed: {e}",
+                product_id=product_id,
+            )
+            return None
+
     def get_order(self, order_id: int) -> Dict[str, Any]:
         """Get order details by ID.
 
@@ -836,3 +983,109 @@ class DeltaRestClient:
         logger.debug("Fetching order", order_id=order_id)
         response = self._make_auth_request("GET", f"/v2/orders/{order_id}")
         return cast(Dict[str, Any], response.get('result', response))
+
+    def place_bracket_order(
+        self,
+        product_id: int,
+        product_symbol: str,
+        tp_price: float,
+        sl_price: float,
+        stop_trigger_method: str = "mark_price",
+    ) -> Dict[str, Any]:
+        """Place a bracket (OCO) order that sets both TP (limit) and SL (stop-market).
+
+        The exchange monitors tick-by-tick; whichever leg fires first is filled and
+        the other is automatically cancelled.
+
+        Args:
+            product_id: Delta Exchange product ID (e.g. for XAUTUSD).
+            product_symbol: Symbol string (e.g. 'XAUTUSD').
+            tp_price: Take-profit limit price.
+            sl_price: Stop-loss trigger price.
+            stop_trigger_method: Price type for SL trigger ('mark_price' or 'last_traded_price').
+
+        Returns:
+            Bracket order response dict from the exchange.
+        """
+        payload = {
+            "product_id": product_id,
+            "product_symbol": product_symbol,
+            "take_profit_order": {
+                "order_type": "limit_order",
+                "limit_price": str(tp_price),
+            },
+            "stop_loss_order": {
+                "order_type": "market_order",
+                "stop_price": str(sl_price),
+            },
+            "bracket_stop_trigger_method": stop_trigger_method,
+        }
+
+        logger.info(
+            "Placing bracket order",
+            product_id=product_id,
+            product_symbol=product_symbol,
+            tp_price=tp_price,
+            sl_price=sl_price,
+        )
+
+        response = self._make_auth_request("POST", "/v2/orders/bracket", data=payload)
+        logger.info(
+            "Bracket order placed",
+            product_id=product_id,
+            result=response.get("result"),
+        )
+        return cast(Dict[str, Any], response)
+
+    def get_candles(
+        self,
+        symbol: str,
+        resolution: int = 60,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+        count: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Fetch OHLCV candle data for a symbol.
+
+        Args:
+            symbol: Trading symbol (e.g. 'XAUTUSD').
+            resolution: Candle resolution in minutes (60 = 1H).
+            start: Start time as Unix timestamp (seconds).
+            end: End time as Unix timestamp (seconds).
+            count: Number of candles to fetch if start is not specified.
+
+        Returns:
+            List of candle dicts with keys: time, open, high, low, close, volume.
+        """
+        res_str = str(resolution)
+        if res_str in ("60", "60m", "1h"):
+            res_str = "1h"
+        elif res_str in ("1", "1m"):
+            res_str = "1m"
+        elif res_str in ("5", "5m"):
+            res_str = "5m"
+        elif res_str in ("15", "15m"):
+            res_str = "15m"
+        elif res_str in ("1440", "1d"):
+            res_str = "1d"
+
+        if end is None:
+            end = int(time.time())
+        if start is None:
+            start = end - 60 * 60 * count
+
+
+        params = {
+            "symbol": symbol,
+            "resolution": res_str,
+            "start": int(start),
+            "end": int(end),
+        }
+
+        logger.debug("Fetching candles", symbol=symbol, resolution=res_str)
+        response = self._make_direct_request("/v2/history/candles", params=params)
+        candles = response.get("result", [])
+        logger.debug("Fetched candles", symbol=symbol, count=len(candles))
+        return cast(List[Dict[str, Any]], candles)
+
+

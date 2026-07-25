@@ -127,11 +127,16 @@ class DiscordNotifier:
         mode: str = "live",
         exit_slippage_usd: Optional[float] = None,
         total_slippage_usd: Optional[float] = None,
+        exchange_realized_pnl: Optional[float] = None,
+        is_exchange_sourced: bool = False,
     ) -> None:
         """Send a straddle exit notification."""
         pnl_color = "0;32" if realized_pnl >= 0 else "0;31"
         pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
         mode_color = "1;32" if mode == "live" else "1;36"
+
+        # Source badge: ✅ = values confirmed from exchange fills/ledger, ⚠️ = estimated
+        source_badge = "✅ exchange" if is_exchange_sourced else "⚠️ estimated"
 
         message = (
             f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
@@ -144,8 +149,19 @@ class DiscordNotifier:
             f"\n"
             f"Entry Premium: \u001b[0;36m${self._f(entry_premium)}\u001b[0m\n"
             f"Exit Premium: \u001b[0;36m${self._f(exit_premium)}\u001b[0m\n"
-            f"Realized P&L: \u001b[{pnl_color}m${self._f(realized_pnl)}\u001b[0m\n"
+            f"Realized P&L: \u001b[{pnl_color}m${self._f(realized_pnl)}\u001b[0m  [{source_badge}]\n"
         )
+
+        # Show exchange-ledger PnL cross-check if available and different from calculated
+        if exchange_realized_pnl is not None:
+            diff = abs(exchange_realized_pnl - realized_pnl)
+            exch_color = "0;32" if exchange_realized_pnl >= 0 else "0;31"
+            message += (
+                f"Exchange PnL: \u001b[{exch_color}m${self._f(exchange_realized_pnl)}\u001b[0m"
+                f"  [ledger]\n"
+            )
+            if diff > 0.001:
+                message += f"\u001b[0;33m⚠ Diff vs calculated: ${self._f(diff, 4)}\u001b[0m\n"
 
         if exit_slippage_usd is not None:
             message += f"Exit Slippage: \u001b[0;35m${self._f(exit_slippage_usd, 2)}\u001b[0m\n"
@@ -222,3 +238,58 @@ class DiscordNotifier:
         message = f"\u001b[0;31mError:\u001b[0m {error}"
         formatted = f"```ansi\n{message}\n```"
         self._send_embed(f"⚠️ {title}", formatted, 15158332)
+
+    def send_trade_alert(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        reason: str,
+        rsi: Optional[float] = None,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        lot_size: Optional[int] = None,
+        pnl: Optional[float] = None,
+        hold_duration: Optional[str] = None,
+        strategy_name: str = "Strategy",
+        timeframe: str = "1h",
+        mode: str = "live",
+    ) -> None:
+        """Send a general trade alert (entry or exit)."""
+        mode_color = "1;32" if mode == "live" else "1;36"
+        is_entry = "ENTRY" in side.upper()
+
+        if is_entry:
+            title = f"🚀 TRADING SIGNAL: {side} {symbol} ({timeframe})"
+            color = 3066993 if "LONG" in side.upper() else 15158332
+            message = (
+                f"Strategy: \u001b[1;37m{strategy_name}\u001b[0m\n"
+                f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
+                f"Price: \u001b[0;36m${self._f(price, 2)}\u001b[0m\n"
+            )
+            if stop_loss_price:
+                message += f"Stop Loss: \u001b[0;31m${self._f(stop_loss_price, 2)}\u001b[0m\n"
+            if take_profit_price:
+                message += f"Take Profit: \u001b[0;32m${self._f(take_profit_price, 2)}\u001b[0m\n"
+            if lot_size:
+                message += f"Lot Size: \u001b[0;36m{lot_size}\u001b[0m contracts\n"
+            message += f"Reason: \u001b[1;37m{reason}\u001b[0m\n"
+        else:
+            pnl_color = "0;32" if (pnl or 0) >= 0 else "0;31"
+            title = f"🚀 TRADING SIGNAL: {side} {symbol} ({timeframe})"
+            color = 3066993 if (pnl or 0) >= 0 else 15158332
+            message = (
+                f"Strategy: \u001b[1;37m{strategy_name}\u001b[0m\n"
+                f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
+                f"Price: \u001b[0;36m${self._f(price, 2)}\u001b[0m\n"
+            )
+            if pnl is not None:
+                message += f"P&L: \u001b[{pnl_color}m${self._f(pnl, 2)}\u001b[0m\n"
+            if hold_duration:
+                message += f"Hold Duration: \u001b[0;36m{hold_duration}\u001b[0m\n"
+            message += f"Reason: \u001b[1;37m{reason}\u001b[0m\n"
+
+        formatted = f"```ansi\n{message}\n```"
+        self._send_embed(title, formatted, color)
+
+
