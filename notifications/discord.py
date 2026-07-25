@@ -152,16 +152,16 @@ class DiscordNotifier:
             f"Realized P&L: \u001b[{pnl_color}m${self._f(realized_pnl)}\u001b[0m  [{source_badge}]\n"
         )
 
-        # Show exchange-ledger PnL cross-check if available and different from calculated
+        # Show calculated PnL cross-check if exchange PnL was primary and calculated value differs
         if exchange_realized_pnl is not None:
             diff = abs(exchange_realized_pnl - realized_pnl)
-            exch_color = "0;32" if exchange_realized_pnl >= 0 else "0;31"
+            calc_color = "0;32" if exchange_realized_pnl >= 0 else "0;31"
             message += (
-                f"Exchange PnL: \u001b[{exch_color}m${self._f(exchange_realized_pnl)}\u001b[0m"
-                f"  [ledger]\n"
+                f"Calculated PnL: \u001b[{calc_color}m${self._f(exchange_realized_pnl)}\u001b[0m"
+                f"  [math]\n"
             )
             if diff > 0.001:
-                message += f"\u001b[0;33m⚠ Diff vs calculated: ${self._f(diff, 4)}\u001b[0m\n"
+                message += f"\u001b[0;33m⚠ Diff vs exchange: ${self._f(diff, 4)}\u001b[0m\n"
 
         if exit_slippage_usd is not None:
             message += f"Exit Slippage: \u001b[0;35m${self._f(exit_slippage_usd, 2)}\u001b[0m\n"

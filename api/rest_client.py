@@ -585,6 +585,57 @@ class DeltaRestClient:
         """Fetch trading fee wallet transactions. Wrapper around get_wallet_transactions."""
         return self.get_wallet_transactions("commission", start_time_us, end_time_us, asset_id, product_id)
 
+    def get_realized_pnl_from_exchange(
+        self,
+        call_product_id: int,
+        put_product_id: int,
+        start_time_us: int,
+        end_time_us: int,
+        is_settlement: bool = False,
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """Fetch true gross realized PnL directly from Delta Exchange wallet ledger.
+
+        Queries /v2/wallet/transactions for both Call and Put products using valid
+        Delta transaction types: 'cashflow' (entry premium & early close exit) and
+        'settlement' (auto-settlement payout at expiry).
+
+        Args:
+            call_product_id: Call leg product ID
+            put_product_id: Put leg product ID
+            start_time_us: Start time (microseconds epoch)
+            end_time_us: End time (microseconds epoch)
+            is_settlement: True if trade was held to expiry
+
+        Returns:
+            Tuple of (realized_pnl_usd, transaction_types_used), or (None, None) if not found.
+        """
+        try:
+            pnl_types = ["cashflow", "settlement"] if is_settlement else ["cashflow"]
+            all_txns = []
+
+            for p_id in (call_product_id, put_product_id):
+                for t_type in pnl_types:
+                    txns = self.get_wallet_transactions(
+                        transaction_types=t_type,
+                        start_time_us=start_time_us,
+                        end_time_us=end_time_us,
+                        product_id=p_id,
+                    )
+                    all_txns.extend(txns)
+
+            if all_txns:
+                total_pnl = sum(float(t.get("amount", 0)) for t in all_txns)
+                tx_label = "+".join(pnl_types)
+                logger.info(
+                    f"Exchange wallet ledger PnL retrieved (types={tx_label}): "
+                    f"Total=${total_pnl:.4f} USD across {len(all_txns)} transaction(s)"
+                )
+                return total_pnl, tx_label
+        except Exception as e:
+            logger.warning(f"Failed to fetch PnL transactions from wallet ledger: {e}")
+
+        return None, None
+
     def get_positions(self, product_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get open positions.
 
@@ -879,6 +930,26 @@ class DeltaRestClient:
             # Filter by order_id (API may return all fills for the product window)
             if order_id is not None:
                 fills = [f for f in fills if str(f.get("order_id")) == str(order_id)]
+            # ---------------------------------------------------------------
+            # CRITICAL: Always filter by product_id on the client side.
+            # Delta Exchange /v2/fills does NOT reliably filter by product_id
+            # for settlement fills — it can return settlement fills belonging
+            # to other products in the same time window (e.g. the Call's
+            # settlement fill leaking into a Put query). This caused the Put
+            # exit premium to be incorrectly set to the Call's settlement
+            # price instead of 0 (OTM), flipping +$0.47 profit into -$2.20.
+            # ---------------------------------------------------------------
+            pre_filter_count = len(fills)
+            fills = [f for f in fills if str(f.get("product_id")) == str(product_id)]
+            if len(fills) != pre_filter_count:
+                logger.warning(
+                    f"get_fills: dropped {pre_filter_count - len(fills)} fill(s) "
+                    f"whose product_id did not match {product_id} "
+                    f"(API returned fills for wrong product — known Delta Exchange issue "
+                    f"with settlement fills).",
+                    product_id=product_id,
+                    fill_type=fill_type,
+                )
             logger.info(
                 "Fetched fills from exchange",
                 product_id=product_id,
@@ -929,7 +1000,13 @@ class DeltaRestClient:
 
         For options held to expiry, Delta Exchange creates a settlement fill
         with fill_type='settlement' and price=<settlement_price_in_points>.
-        The wallet transaction type is 'settlement' (not 'pnl' or 'settlement_pnl').
+        OTM options that settle at zero do NOT produce a settlement fill —
+        in that case this function correctly returns 0.0.
+
+        NOTE: get_fills() applies a client-side product_id filter to prevent
+        settlement fills from other products leaking in (known Delta Exchange
+        API behaviour where a product_id query param is ignored for settlement
+        fills and all fills in the time window are returned instead).
 
         Args:
             start_time_us: Start time in microseconds.
@@ -937,8 +1014,9 @@ class DeltaRestClient:
             product_id: Option product ID.
 
         Returns:
-            Settlement price in points (what the option was worth at expiry),
-            or None if no settlement fill found.
+            Settlement price in points (what the option was worth at expiry).
+            Returns 0.0 when no settlement fill is found (OTM option settled at zero).
+            Returns None only on API/network error so the caller can use a fallback.
         """
         try:
             settlement_fills = self.get_fills(
@@ -958,12 +1036,15 @@ class DeltaRestClient:
                 )
                 return settle_price
             else:
-                logger.warning(
-                    "No settlement fills found for product — "
-                    "settlement may not have processed yet.",
+                # No settlement fill = OTM option that expired worthless (price = 0).
+                # Return 0.0 explicitly so the caller does NOT fall back to a
+                # spot-based intrinsic estimate, which could be incorrect.
+                logger.info(
+                    "No settlement fill found for product — "
+                    "treating as OTM (settlement price = 0.0 pts).",
                     product_id=product_id,
                 )
-                return None
+                return 0.0
         except Exception as e:
             logger.warning(
                 f"get_settlement_pnl_transactions failed: {e}",

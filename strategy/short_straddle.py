@@ -960,58 +960,33 @@ class ShortStraddleStrategy:
 
         exit_total = exit_call_premium + exit_put_premium
         pnl_points = self.entry_premium - exit_total
-        realized_pnl_usd = pnl_points * self.lot_size * self.contract_value
-
-        # Cross-check realized PnL against exchange ledger 'pnl' transactions
-        # For auto-settle this is already embedded in settlement_pnl_transactions above.
-        # For early-close, query the 'realized_pnl' transaction type.
-        exchange_realized_pnl: Optional[float] = None
-        if self.order_placement_enabled and self.mode != "paper" and not let_settle:
-            try:
-                now_us_pnl = int(time.time() * 1_000_000)
-                start_us_pnl = self.entry_time_us - (60 * 1_000_000)
-                for pnl_type in ("realized_pnl", "pnl"):
-                    call_pnl_txns = self.client.get_wallet_transactions(
-                        transaction_types=pnl_type,
-                        start_time_us=start_us_pnl,
-                        end_time_us=now_us_pnl,
-                        product_id=self.call_product_id,
-                    )
-                    put_pnl_txns = self.client.get_wallet_transactions(
-                        transaction_types=pnl_type,
-                        start_time_us=start_us_pnl,
-                        end_time_us=now_us_pnl,
-                        product_id=self.put_product_id,
-                    )
-                    if call_pnl_txns or put_pnl_txns:
-                        exchange_realized_pnl = (
-                            sum(float(t.get("amount", 0)) for t in call_pnl_txns)
-                            + sum(float(t.get("amount", 0)) for t in put_pnl_txns)
-                        )
-                        logger.info(
-                            f"[PNL CROSS-CHECK] Exchange ledger PnL (type={pnl_type}): "
-                            f"${exchange_realized_pnl:.4f} | Calculated: ${realized_pnl_usd:.4f} | "
-                            f"Diff: ${exchange_realized_pnl - realized_pnl_usd:.4f}"
-                        )
-                        break
-                if exchange_realized_pnl is None:
-                    logger.info("[PNL CROSS-CHECK] No realized_pnl/pnl transactions found — using calculated value")
-            except Exception as e:
-                logger.warning(f"[PNL CROSS-CHECK] Failed to fetch exchange PnL: {e}")
+        calculated_pnl_usd = pnl_points * self.lot_size * self.contract_value
 
         self.is_position_open = False
 
-        # Query trading fees (commissions) from the exchange ledger
-        trading_fees = 0.0
+        # Query actual Realized PnL & trading fees (commissions) from the exchange ledger
+        exchange_realized_pnl: Optional[float] = None
+        pnl_tx_type: Optional[str] = None
+        trading_fees: Optional[float] = 0.0
+
         if self.order_placement_enabled and self.mode != "paper":
             try:
                 sleep_sec = 10 if let_settle else 3
-                logger.info(f"Waiting {sleep_sec} seconds for exchange ledger to update commission logs...")
+                logger.info(f"Waiting {sleep_sec} seconds for exchange ledger to update PnL and commission logs...")
                 time.sleep(sleep_sec)
                 now_us = int(time.time() * 1_000_000)
-                # Query from entry minus 60s up to now
                 start_us = self.entry_time_us - (60 * 1_000_000)
 
+                # 1. Fetch Realized PnL directly from exchange wallet transactions
+                exchange_realized_pnl, pnl_tx_type = self.client.get_realized_pnl_from_exchange(
+                    call_product_id=self.call_product_id,
+                    put_product_id=self.put_product_id,
+                    start_time_us=start_us,
+                    end_time_us=now_us,
+                    is_settlement=let_settle,
+                )
+
+                # 2. Fetch Commissions from exchange wallet transactions
                 call_txns = self.client.get_trading_fee_transactions(
                     start_time_us=start_us,
                     end_time_us=now_us,
@@ -1029,8 +1004,22 @@ class ShortStraddleStrategy:
 
                 logger.info(f"Retrieved actual commissions from ledger: Call=${call_comm:.4f}, Put=${put_comm:.4f}, Total=${trading_fees:.4f}")
             except Exception as e:
-                logger.error(f"Failed to fetch actual commissions from ledger: {e}")
-                trading_fees = None
+                logger.error(f"Failed to fetch actual PnL/commissions from ledger: {e}")
+
+        # Determine final PnL: use exchange ledger PnL if available, fallback to calculated
+        if exchange_realized_pnl is not None:
+            final_pnl_usd = exchange_realized_pnl
+            is_exchange_sourced = True
+            logger.info(
+                f"[PNL RESOLUTION] Using EXCHANGE LEDGER PnL ({pnl_tx_type}): ${final_pnl_usd:.4f} USD "
+                f"| Calculated was: ${calculated_pnl_usd:.4f} USD (diff=${final_pnl_usd - calculated_pnl_usd:.4f})"
+            )
+        else:
+            final_pnl_usd = calculated_pnl_usd
+            is_exchange_sourced = False
+            logger.warning(
+                f"[PNL RESOLUTION] Exchange ledger PnL not available — falling back to calculated value: ${final_pnl_usd:.4f} USD"
+            )
 
         # Fallback to simulated fees if live ledger query was skipped/failed
         if trading_fees is None or self.mode == "paper":
@@ -1057,7 +1046,7 @@ class ShortStraddleStrategy:
         logger.info(
             f"Exit complete — "
             f"Entry: ${self.entry_premium:.4f}, Exit: ${exit_total:.4f}, "
-            f"PnL Points: {pnl_points:+.4f}, PnL USD: ${realized_pnl_usd:+.4f}, Fees: ${trading_fees:.4f}"
+            f"PnL Points: {pnl_points:+.4f}, Realized PnL USD: ${final_pnl_usd:+.4f}, Fees: ${trading_fees:.4f}"
         )
 
         # Send exit notification (pass USD P&L, fees, and exchange cross-check PnL)
@@ -1066,7 +1055,7 @@ class ShortStraddleStrategy:
             exit_reason=reason,
             entry_premium=self.entry_premium,
             exit_premium=exit_total,
-            realized_pnl=realized_pnl_usd,
+            realized_pnl=final_pnl_usd,
             call_symbol=self.call_symbol,
             put_symbol=self.put_symbol,
             exit_call_premium=exit_call_premium,
@@ -1074,8 +1063,8 @@ class ShortStraddleStrategy:
             mode=self.mode,
             exit_slippage_usd=exit_slippage_usd,
             total_slippage_usd=total_slippage_usd,
-            exchange_realized_pnl=exchange_realized_pnl,
-            is_exchange_sourced=(let_settle or exchange_realized_pnl is not None),
+            exchange_realized_pnl=calculated_pnl_usd if is_exchange_sourced else None,
+            is_exchange_sourced=is_exchange_sourced,
         )
 
         # Journal to Firestore (pnl in USD, additional metrics in kwargs)
@@ -1084,7 +1073,7 @@ class ShortStraddleStrategy:
             exit_reason=reason,
             exit_call_premium=exit_call_premium,
             exit_put_premium=exit_put_premium,
-            realized_pnl=realized_pnl_usd,
+            realized_pnl=final_pnl_usd,
             max_mtm_loss=self.max_mtm_loss * self.lot_size * self.contract_value,
             call_exit_order_id=call_exit_order_id,
             put_exit_order_id=put_exit_order_id,
