@@ -7,7 +7,7 @@ import hmac
 import random
 import hashlib
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from delta_rest_client import DeltaRestClient as BaseDeltaClient, OrderType
@@ -353,59 +353,94 @@ class DeltaRestClient:
         if not option_products:
             raise APIError(f"No live option products found for {underlying}")
 
-        # Get all unique strikes
-        strikes = set()
-        for p in option_products:
-            strike = p.get("strike_price")
-            if strike is not None:
-                strikes.add(float(strike))
-
-        if not strikes:
-            raise APIError("No strike prices found in option products")
-
-        # Find ATM strike (closest to spot price)
-        atm_strike = min(strikes, key=lambda s: abs(s - spot_price))
-        logger.info(f"ATM strike for {underlying}: {atm_strike} (spot: {spot_price:,.2f})")
-
-        # Filter options at ATM strike
-        atm_options = [
-            p for p in option_products
-            if float(p.get("strike_price", 0)) == atm_strike
-        ]
-
-        # Separate calls and puts
-        calls = [p for p in atm_options if p.get("contract_type") == "call_options"]
-        puts = [p for p in atm_options if p.get("contract_type") == "put_options"]
-
-        if not calls:
-            raise APIError(f"No call option found at strike {atm_strike}")
-        if not puts:
-            raise APIError(f"No put option found at strike {atm_strike}")
-
-        # Pick the nearest expiry for both
-        def expiry_key(p):
-            """Sort by settlement_time to find nearest expiry."""
+        def get_expiry_key(p: Dict[str, Any]) -> float:
+            """Sort by settlement_time to find nearest expiry timestamp."""
             settlement = p.get("settlement_time") or p.get("expiry_date") or ""
             try:
                 if isinstance(settlement, (int, float)):
-                    return settlement
-                return datetime.fromisoformat(str(settlement).replace("Z", "+00:00")).timestamp()
+                    return float(settlement)
+                if settlement:
+                    return datetime.fromisoformat(str(settlement).replace("Z", "+00:00")).timestamp()
             except Exception:
-                return float("inf")
+                pass
+            return float("inf")
 
-        calls.sort(key=expiry_key)
-        puts.sort(key=expiry_key)
+        # Group products by expiry timestamp
+        expiries: Dict[float, List[Dict[str, Any]]] = {}
+        for p in option_products:
+            key = get_expiry_key(p)
+            if key != float("inf"):
+                expiries.setdefault(key, []).append(p)
 
-        call_product = calls[0]
-        put_product = puts[0]
+        if not expiries:
+            raise APIError("No valid expiry dates found in option products")
 
-        logger.info(
-            f"Selected ATM options — "
-            f"Call: {call_product.get('symbol')} (ID: {call_product.get('id')}), "
-            f"Put: {put_product.get('symbol')} (ID: {put_product.get('id')})"
-        )
+        # Filter strictly for DAILY contracts (expiring within 24 hours from now)
+        # Allows a 5-minute buffer in the past for clock drift
+        now_ts = datetime.now(timezone.utc).timestamp()
+        MAX_DAILY_EXPIRY_SEC = 24 * 3600  # 24 hours
 
-        return call_product, put_product, atm_strike
+        daily_expiry_keys = sorted([
+            k for k in expiries.keys()
+            if (now_ts - 300) <= k <= (now_ts + MAX_DAILY_EXPIRY_SEC)
+        ])
+
+        if not daily_expiry_keys:
+            logger.error(
+                f"No daily option expiries (<= 24h) found for {underlying}. "
+                f"Available expiries: {[datetime.fromtimestamp(k, tz=timezone.utc).isoformat() for k in sorted(expiries.keys())]}"
+            )
+            raise APIError(f"No active daily option contract (expiring within 24 hours) found for {underlying}")
+
+        sorted_expiry_keys = daily_expiry_keys
+
+        # Iterate through nearest expiries to find one with available Call and Put options
+        for exp_key in sorted_expiry_keys:
+            expiry_products = expiries[exp_key]
+
+            calls_by_strike: Dict[float, Dict[str, Any]] = {}
+            puts_by_strike: Dict[float, Dict[str, Any]] = {}
+
+            for p in expiry_products:
+                strike_val = p.get("strike_price")
+                if strike_val is None:
+                    continue
+                try:
+                    s_float = float(strike_val)
+                except (ValueError, TypeError):
+                    continue
+
+                ctype = p.get("contract_type")
+                if ctype == "call_options":
+                    calls_by_strike[s_float] = p
+                elif ctype == "put_options":
+                    puts_by_strike[s_float] = p
+
+            # Prefer strikes that have BOTH call and put available for straddle
+            common_strikes = set(calls_by_strike.keys()).intersection(set(puts_by_strike.keys()))
+
+            if not common_strikes:
+                continue
+
+            # Find ATM strike closest to spot price among strikes available for THIS expiry
+            atm_strike = min(common_strikes, key=lambda s: abs(s - spot_price))
+            call_product = calls_by_strike[atm_strike]
+            put_product = puts_by_strike[atm_strike]
+
+            settlement_str = call_product.get("settlement_time") or call_product.get("expiry_date") or ""
+            logger.info(
+                f"ATM strike for {underlying} (nearest expiry: {settlement_str}): "
+                f"{atm_strike} (spot: {spot_price:,.2f})"
+            )
+            logger.info(
+                f"Selected ATM options — "
+                f"Call: {call_product.get('symbol')} (ID: {call_product.get('id')}), "
+                f"Put: {put_product.get('symbol')} (ID: {put_product.get('id')})"
+            )
+
+            return call_product, put_product, atm_strike
+
+        raise APIError(f"No valid ATM Call and Put options found for {underlying} across expiries")
 
     # -----------------------------------------------------------------------
     # Trading Methods
