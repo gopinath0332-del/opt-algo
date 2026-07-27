@@ -132,18 +132,34 @@ class Config:
         self.enable_error_alerts = os.getenv("ENABLE_ERROR_ALERTS", "true").lower() == "true"
         self.alert_throttle_seconds = int(os.getenv("ALERT_THROTTLE_SECONDS", "300"))
 
+    def _parse_strategy_dict(self, strategy_settings: Dict[str, Any]) -> StrategyConfig:
+        settings = dict(strategy_settings)
+        if "stop_loss" in settings and isinstance(settings["stop_loss"], dict):
+            settings["stop_loss"] = StopLossConfig(**settings["stop_loss"])
+        return StrategyConfig(**settings)
+
     def _init_strategy_config(self):
         """Initialize strategy configuration."""
-        strategy_settings = self.settings.get("strategy", {})
+        straddles_settings = self.settings.get("straddle_strategies", [])
+        self.straddle_strategies: List[StrategyConfig] = []
 
-        # Handle nested stop_loss config
-        if "stop_loss" in strategy_settings and isinstance(strategy_settings["stop_loss"], dict):
-            strategy_settings["stop_loss"] = StopLossConfig(**strategy_settings["stop_loss"])
+        if isinstance(straddles_settings, list) and len(straddles_settings) > 0:
+            for s_dict in straddles_settings:
+                if isinstance(s_dict, dict):
+                    self.straddle_strategies.append(self._parse_strategy_dict(s_dict))
 
-        self.strategy = StrategyConfig(**strategy_settings)
+        if not self.straddle_strategies:
+            strategy_settings = self.settings.get("strategy", {})
+            self.straddle_strategies.append(self._parse_strategy_dict(strategy_settings))
+
+        self.strategy = self.straddle_strategies[0]
 
         # Order placement kill-switch
         self.enable_order_placement = os.getenv("ENABLE_ORDER_PLACEMENT", "false").lower() == "true"
+
+    def get_straddle_strategies(self) -> List[StrategyConfig]:
+        """Get all configured straddle strategy configurations."""
+        return self.straddle_strategies
 
     def _init_firestore_config(self):
         """Initialize Firestore configuration for trade journaling."""

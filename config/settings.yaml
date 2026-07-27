@@ -1,25 +1,34 @@
 # Options Trading Configuration
 
-# Strategy Configuration
-# This is the first strategy — more strategies can be added in future
-strategy:
-  name: "short_straddle"
-  underlying: "BTC"           # Change to "ETH" or other supported assets in future
-  entry_time: "17:00"         # IST — daily entry time
-  exit_time: "17:30"          # IST — daily expiry / settlement time
-  timezone: "Asia/Kolkata"    # IST
-  capital_allocation_pct: 20   # % of available wallet balance to deploy per trade
-  lot_size: null              # Enable dynamic lot sizing (null)
-  max_lot_size: 1000          # Capped at maximum of 1,000 lots per leg
-  leverage: 200               # 200x leverage
-  order_type: "market_order"  # Market orders for instant fill
-  skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
+# Short Straddle Strategies Configuration
+straddle_strategies:
+  - name: "btc_short_straddle"
+    underlying: "BTC"           # BTC options
+    entry_time: "17:00"         # IST — daily entry time (5:00 PM IST)
+    exit_time: "17:30"          # IST — daily expiry / settlement time (5:30 PM IST)
+    timezone: "Asia/Kolkata"    # IST
+    capital_allocation_pct: 20   # % of available wallet balance to deploy per trade
+    lot_size: null              # Enable dynamic lot sizing (null)
+    max_lot_size: 1000          # Capped at maximum of 1,000 lots per leg
+    leverage: 200               # 200x leverage
+    order_type: "market_order"  # Market orders for instant fill
+    skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
+    stop_loss: null
+    monitor_interval_sec: 30     # Poll interval during SL monitoring (seconds)
 
-  # Combined Stop-Loss Configuration
-  stop_loss: null
-
-  # Monitoring
-  monitor_interval_sec: 30     # Poll interval during SL monitoring (seconds)
+  - name: "xaut_short_straddle"
+    underlying: "XAUT"          # XAUT options
+    entry_time: "21:00"         # IST — daily entry time (9:00 PM IST)
+    exit_time: "21:30"          # IST — daily expiry / settlement time (9:30 PM IST)
+    timezone: "Asia/Kolkata"    # IST
+    capital_allocation_pct: 20   # % of available wallet balance to deploy per trade
+    lot_size: null              # Enable dynamic lot sizing (null)
+    max_lot_size: 1000          # Capped at maximum of 1,000 lots per leg
+    leverage: 100               # 100x leverage for XAUT
+    order_type: "market_order"  # Market orders for instant fill
+    skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
+    stop_loss: null
+    monitor_interval_sec: 30     # Poll interval during SL monitoring (seconds)
 
 # Gold ORB Strategy Configuration
 strategies:

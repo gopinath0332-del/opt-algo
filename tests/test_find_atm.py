@@ -80,3 +80,24 @@ def test_find_atm_options_no_products(client):
 
     with pytest.raises(APIError, match="No live option products found"):
         client.find_atm_options(underlying="BTC", spot_price=64400.00)
+
+
+def test_find_atm_options_xaut(client):
+    now = datetime.now(timezone.utc)
+    daily_expiry = (now + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+
+    mock_products = [
+        {"id": 101, "symbol": "C-XAUT-4050-270726", "contract_type": "call_options", "strike_price": "4050", "settlement_time": daily_expiry, "state": "live", "underlying_asset": {"symbol": "XAUT"}},
+        {"id": 102, "symbol": "P-XAUT-4050-270726", "contract_type": "put_options", "strike_price": "4050", "settlement_time": daily_expiry, "state": "live", "underlying_asset": {"symbol": "XAUT"}},
+        {"id": 103, "symbol": "C-XAUT-4060-270726", "contract_type": "call_options", "strike_price": "4060", "settlement_time": daily_expiry, "state": "live", "underlying_asset": {"symbol": "XAUT"}},
+        {"id": 104, "symbol": "P-XAUT-4060-270726", "contract_type": "put_options", "strike_price": "4060", "settlement_time": daily_expiry, "state": "live", "underlying_asset": {"symbol": "XAUT"}},
+    ]
+
+    client.get_option_products = MagicMock(return_value=mock_products)
+
+    call_prod, put_prod, atm_strike = client.find_atm_options(underlying="XAUT", spot_price=4064.10)
+
+    assert atm_strike == 4060.0
+    assert call_prod["symbol"] == "C-XAUT-4060-270726"
+    assert put_prod["symbol"] == "P-XAUT-4060-270726"
+

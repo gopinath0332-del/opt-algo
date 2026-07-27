@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 from api.rest_client import DeltaRestClient
-from core.config import Config
+from core.config import Config, StrategyConfig
 from core.exceptions import APIError, TradingError
 from core.firestore_client import journal_straddle_entry, journal_straddle_exit
 from core.logger import get_logger
@@ -30,30 +30,38 @@ IST = timezone(timedelta(hours=5, minutes=30))
 class ShortStraddleStrategy:
     """Short Straddle strategy — sell ATM Call + Put, monitor combined SL, exit on schedule."""
 
-    def __init__(self, config: Config, client: DeltaRestClient, notifier: NotificationManager):
+    def __init__(
+        self,
+        config: Config,
+        client: DeltaRestClient,
+        notifier: NotificationManager,
+        strategy_config: Optional[StrategyConfig] = None,
+    ):
         """Initialize the strategy.
 
         Args:
             config: Application configuration
             client: Delta Exchange REST client
             notifier: Notification manager
+            strategy_config: Specific StrategyConfig instance (defaults to config.strategy)
         """
         self.config = config
         self.client = client
         self.notifier = notifier
+        self.strategy_config = strategy_config or config.strategy
 
         # Strategy parameters from config
-        self.underlying = config.strategy.underlying
-        self.static_lot_size = config.strategy.lot_size           # None = use dynamic sizing
-        self.max_lot_size = config.strategy.max_lot_size           # None = no limit
-        self.capital_allocation_pct = config.strategy.capital_allocation_pct / 100.0
-        self.lot_size: int = config.strategy.lot_size or 1        # Will be overridden dynamically at entry
-        self.leverage = config.strategy.leverage
-        self.option_margin_requirement_pct = config.strategy.option_margin_requirement_pct / 100.0
-        self.skip_weekends = config.strategy.skip_weekends
-        self.sl_pct = config.strategy.stop_loss.value / 100.0 if config.strategy.stop_loss else None
-        self.monitor_interval = config.strategy.monitor_interval_sec
-        self.order_type = config.strategy.order_type
+        self.underlying = self.strategy_config.underlying
+        self.static_lot_size = self.strategy_config.lot_size           # None = use dynamic sizing
+        self.max_lot_size = self.strategy_config.max_lot_size           # None = no limit
+        self.capital_allocation_pct = self.strategy_config.capital_allocation_pct / 100.0
+        self.lot_size: int = self.strategy_config.lot_size or 1        # Will be overridden dynamically at entry
+        self.leverage = self.strategy_config.leverage
+        self.option_margin_requirement_pct = self.strategy_config.option_margin_requirement_pct / 100.0
+        self.skip_weekends = self.strategy_config.skip_weekends
+        self.sl_pct = self.strategy_config.stop_loss.value / 100.0 if self.strategy_config.stop_loss else None
+        self.monitor_interval = self.strategy_config.monitor_interval_sec
+        self.order_type = self.strategy_config.order_type
 
         # Trading mode
         self.mode = config.get_mode()  # 'live' or 'paper'
@@ -750,7 +758,7 @@ class ShortStraddleStrategy:
             return
 
         # Determine if we should hold to expiry (auto-settle) or place manual orders
-        let_settle = (reason == "scheduled_exit" and self.config.strategy.exit_time == "17:30")
+        let_settle = (reason == "scheduled_exit" and self.config.strategy.exit_time in ["17:30", "21:30"])
 
         # Get exit premiums before closing (will be overridden with actual fills or settlement intrinsic value)
         exit_call_premium = 0.0
