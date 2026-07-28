@@ -658,7 +658,7 @@ class ShortStraddleStrategy:
             return False
 
         # Parse exit time
-        exit_time_str = self.config.strategy.exit_time
+        exit_time_str = self.strategy_config.exit_time
         now = datetime.now(IST)
         exit_h, exit_m = map(int, exit_time_str.split(":"))
         exit_time = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
@@ -758,7 +758,7 @@ class ShortStraddleStrategy:
             return
 
         # Determine if we should hold to expiry (auto-settle) or place manual orders
-        let_settle = (reason == "scheduled_exit" and self.config.strategy.exit_time in ["17:30", "21:30"])
+        let_settle = (reason == "scheduled_exit" and self.strategy_config.exit_time in ["17:30", "21:30"])
 
         # Get exit premiums before closing (will be overridden with actual fills or settlement intrinsic value)
         exit_call_premium = 0.0
