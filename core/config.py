@@ -24,6 +24,7 @@ class StopLossConfig(BaseModel):
 class StrategyConfig(BaseModel):
     """Strategy configuration."""
 
+    enabled: bool = Field(default=True, description="Whether this strategy is active")
     name: str = Field(default="short_straddle")
     underlying: str = Field(default="BTC")
     entry_time: str = Field(default="17:00")
@@ -146,7 +147,11 @@ class Config:
         if isinstance(straddles_settings, list) and len(straddles_settings) > 0:
             for s_dict in straddles_settings:
                 if isinstance(s_dict, dict):
-                    self.straddle_strategies.append(self._parse_strategy_dict(s_dict))
+                    parsed = self._parse_strategy_dict(s_dict)
+                    if not parsed.enabled:
+                        logger.info(f"Strategy '{parsed.name}' is disabled — skipping")
+                        continue
+                    self.straddle_strategies.append(parsed)
 
         if not self.straddle_strategies:
             strategy_settings = self.settings.get("strategy", {})

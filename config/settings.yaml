@@ -17,6 +17,7 @@ straddle_strategies:
     monitor_interval_sec: 60     # Poll interval during SL monitoring (seconds)
 
   - name: "xaut_short_straddle"
+    enabled: false               # Temporarily disabled
     underlying: "XAUT"          # XAUT options
     entry_time: "21:00"         # IST — daily entry time (9:00 PM IST)
     exit_time: "21:30"          # IST — daily expiry / settlement time (9:30 PM IST)
