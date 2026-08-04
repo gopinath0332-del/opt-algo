@@ -976,6 +976,8 @@ class ShortStraddleStrategy:
         exchange_realized_pnl: Optional[float] = None
         pnl_tx_type: Optional[str] = None
         trading_fees: Optional[float] = 0.0
+        call_comm: float = 0.0
+        put_comm: float = 0.0
 
         if self.order_placement_enabled and self.mode != "paper":
             try:
@@ -1051,10 +1053,21 @@ class ShortStraddleStrategy:
                 trading_fees = (entry_notional + exit_notional) * 0.0003
                 logger.info(f"Simulated trading fees (0.03% taker rate): ${trading_fees:.4f}")
 
+        # Contract-wise PnL (in USD)
+        multiplier = self.lot_size * self.contract_value
+        call_pnl_usd = (self.call_entry_premium - exit_call_premium) * multiplier
+        put_pnl_usd = (self.put_entry_premium - exit_put_premium) * multiplier
+
+        # Gross PnL = realized PnL before fees (use exchange or calculated)
+        gross_pnl_usd = final_pnl_usd
+        net_pnl_usd = gross_pnl_usd - (trading_fees or 0.0)
+
         logger.info(
             f"Exit complete — "
             f"Entry: ${self.entry_premium:.4f}, Exit: ${exit_total:.4f}, "
-            f"PnL Points: {pnl_points:+.4f}, Realized PnL USD: ${final_pnl_usd:+.4f}, Fees: ${trading_fees:.4f}"
+            f"PnL Points: {pnl_points:+.4f}, Realized PnL USD: ${final_pnl_usd:+.4f}, Fees: ${trading_fees:.4f}, "
+            f"Call PnL: ${call_pnl_usd:+.4f}, Put PnL: ${put_pnl_usd:+.4f}, "
+            f"Gross: ${gross_pnl_usd:+.4f}, Net: ${net_pnl_usd:+.4f}"
         )
 
         # Send exit notification (pass USD P&L, fees, and exchange cross-check PnL)
@@ -1073,6 +1086,15 @@ class ShortStraddleStrategy:
             total_slippage_usd=total_slippage_usd,
             exchange_realized_pnl=calculated_pnl_usd if is_exchange_sourced else None,
             is_exchange_sourced=is_exchange_sourced,
+            call_entry_premium=self.call_entry_premium,
+            put_entry_premium=self.put_entry_premium,
+            call_pnl=call_pnl_usd,
+            put_pnl=put_pnl_usd,
+            call_fee=call_comm,
+            put_fee=put_comm,
+            total_fee=trading_fees,
+            gross_pnl=gross_pnl_usd,
+            net_pnl=net_pnl_usd,
         )
 
         # Journal to Firestore (pnl in USD, additional metrics in kwargs)

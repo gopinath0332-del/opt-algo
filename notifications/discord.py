@@ -129,6 +129,15 @@ class DiscordNotifier:
         total_slippage_usd: Optional[float] = None,
         exchange_realized_pnl: Optional[float] = None,
         is_exchange_sourced: bool = False,
+        call_entry_premium: Optional[float] = None,
+        put_entry_premium: Optional[float] = None,
+        call_pnl: Optional[float] = None,
+        put_pnl: Optional[float] = None,
+        call_fee: Optional[float] = None,
+        put_fee: Optional[float] = None,
+        total_fee: Optional[float] = None,
+        gross_pnl: Optional[float] = None,
+        net_pnl: Optional[float] = None,
     ) -> None:
         """Send a straddle exit notification."""
         pnl_color = "0;32" if realized_pnl >= 0 else "0;31"
@@ -142,10 +151,32 @@ class DiscordNotifier:
             f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
             f"Reason: \u001b[1;37m{exit_reason}\u001b[0m\n"
             f"\n"
-            f"\u001b[1;37mCALL:\u001b[0m {call_symbol}\n"
-            f"  Exit Premium: \u001b[0;33m${self._f(exit_call_premium)}\u001b[0m\n"
-            f"\u001b[1;37mPUT:\u001b[0m {put_symbol}\n"
-            f"  Exit Premium: \u001b[0;33m${self._f(exit_put_premium)}\u001b[0m\n"
+        )
+
+        # Contract-wise breakdown: CALL
+        message += f"\u001b[1;37mCALL:\u001b[0m {call_symbol}\n"
+        if call_entry_premium is not None:
+            message += f"  Entry: \u001b[0;36m${self._f(call_entry_premium)}\u001b[0m\n"
+        message += f"  Exit: \u001b[0;33m${self._f(exit_call_premium)}\u001b[0m\n"
+        if call_pnl is not None:
+            c_color = "0;32" if call_pnl >= 0 else "0;31"
+            message += f"  PnL: \u001b[{c_color}m${self._f(call_pnl)}\u001b[0m\n"
+        if call_fee is not None:
+            message += f"  Fee: \u001b[0;35m${self._f(call_fee)}\u001b[0m\n"
+
+        # Contract-wise breakdown: PUT
+        message += f"\u001b[1;37mPUT:\u001b[0m {put_symbol}\n"
+        if put_entry_premium is not None:
+            message += f"  Entry: \u001b[0;36m${self._f(put_entry_premium)}\u001b[0m\n"
+        message += f"  Exit: \u001b[0;33m${self._f(exit_put_premium)}\u001b[0m\n"
+        if put_pnl is not None:
+            p_color = "0;32" if put_pnl >= 0 else "0;31"
+            message += f"  PnL: \u001b[{p_color}m${self._f(put_pnl)}\u001b[0m\n"
+        if put_fee is not None:
+            message += f"  Fee: \u001b[0;35m${self._f(put_fee)}\u001b[0m\n"
+
+        # Combined premiums
+        message += (
             f"\n"
             f"Entry Premium: \u001b[0;36m${self._f(entry_premium)}\u001b[0m\n"
             f"Exit Premium: \u001b[0;36m${self._f(exit_premium)}\u001b[0m\n"
@@ -167,6 +198,18 @@ class DiscordNotifier:
             message += f"Exit Slippage: \u001b[0;35m${self._f(exit_slippage_usd, 2)}\u001b[0m\n"
         if total_slippage_usd is not None:
             message += f"Total Slippage: \u001b[0;35m${self._f(total_slippage_usd, 2)}\u001b[0m\n"
+
+        # Gross PnL, Total Fee, Net PnL summary
+        if gross_pnl is not None or total_fee is not None or net_pnl is not None:
+            message += f"\n\u001b[1;37m── Summary ──\u001b[0m\n"
+            if gross_pnl is not None:
+                g_color = "0;32" if gross_pnl >= 0 else "0;31"
+                message += f"Gross PnL: \u001b[{g_color}m${self._f(gross_pnl)}\u001b[0m\n"
+            if total_fee is not None:
+                message += f"Total Fee: \u001b[0;35m${self._f(total_fee)}\u001b[0m\n"
+            if net_pnl is not None:
+                n_color = "0;32" if net_pnl >= 0 else "0;31"
+                message += f"Net PnL: \u001b[{n_color}m${self._f(net_pnl)}\u001b[0m\n"
 
         message += f"\nTime: {time.strftime('%H:%M:%S IST')}"
 
