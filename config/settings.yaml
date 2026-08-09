@@ -14,7 +14,7 @@ straddle_strategies:
     order_type: "market_order"  # Market orders for instant fill
     skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
     stop_loss: null
-    monitor_interval_sec: 60     # Poll interval during SL monitoring (seconds)
+    monitor_interval_sec: 60     # Poll interval when SL is active (unused when stop_loss: null)
 
   - name: "xaut_short_straddle"
     enabled: false               # Temporarily disabled
@@ -29,7 +29,7 @@ straddle_strategies:
     order_type: "market_order"  # Market orders for instant fill
     skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
     stop_loss: null
-    monitor_interval_sec: 60     # Poll interval during SL monitoring (seconds)
+    monitor_interval_sec: 60     # Poll interval when SL is active (unused when stop_loss: null)
 
 # Gold ORB Strategy Configuration
 strategies:

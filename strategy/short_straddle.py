@@ -162,11 +162,16 @@ class ShortStraddleStrategy:
                 logger.warning("Entry failed — no positions opened. Aborting strategy cycle.")
                 return
 
-            # Step 2: Monitor for SL
-            sl_hit = self._monitor_stop_loss()
+            if self.sl_pct is not None:
+                # Step 2: Monitor for SL
+                sl_hit = self._monitor_stop_loss()
 
-            # Step 3: Exit (if SL was not hit, positions are still open)
-            if not sl_hit:
+                # Step 3: Exit (if SL was not hit, positions are still open)
+                if not sl_hit:
+                    self._execute_exit(reason="scheduled_exit")
+            else:
+                # No stop-loss — just wait for exit time (no API polling needed)
+                self._wait_until_exit_time()
                 self._execute_exit(reason="scheduled_exit")
 
         except Exception as e:
@@ -639,6 +644,24 @@ class ShortStraddleStrategy:
         )
 
         logger.info("✅ Straddle entry complete")
+
+    def _wait_until_exit_time(self) -> None:
+        """Sleep until exit time without polling. Used when stop-loss is disabled."""
+        logger.info("=" * 60)
+        logger.info("STEP 2: WAITING — No stop-loss configured, sleeping until exit time")
+        logger.info("=" * 60)
+
+        exit_time_str = self.strategy_config.exit_time
+        now = datetime.now(IST)
+        exit_h, exit_m = map(int, exit_time_str.split(":"))
+        exit_time = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
+
+        remaining = (exit_time - now).total_seconds()
+        if remaining > 0:
+            logger.info(f"Sleeping {remaining:.0f}s until {exit_time_str} IST")
+            time.sleep(remaining)
+
+        logger.info("Exit time reached — proceeding to scheduled exit")
 
     def _monitor_stop_loss(self) -> bool:
         """Monitor the combined position for stop-loss.
