@@ -316,7 +316,30 @@ def main():
 
                 def make_scheduled_runner(s_cfg):
                     def scheduled_run():
-                        logger.info(f"Scheduled run for {s_cfg.underlying} triggered at {datetime.now(IST).strftime('%H:%M:%S IST')}")
+                        now_ist = datetime.now(IST)
+                        current_time_str = now_ist.strftime('%H:%M:%S IST')
+
+                        # ── GUARD: Reject execution outside the entry window ──
+                        # The `schedule` library will fire missed/overdue jobs
+                        # immediately upon startup. This guard prevents trading
+                        # at unintended times (e.g., after a power failure).
+                        entry_h, entry_m = map(int, s_cfg.entry_time.split(":"))
+                        scheduled_time = now_ist.replace(
+                            hour=entry_h, minute=entry_m, second=0, microsecond=0
+                        )
+                        drift = abs((now_ist - scheduled_time).total_seconds())
+                        max_drift_seconds = 300  # 5-minute tolerance window
+
+                        if drift > max_drift_seconds:
+                            logger.warning(
+                                f"Skipping overdue/stale trigger for {s_cfg.underlying} — "
+                                f"current time {current_time_str} is {drift:.0f}s away from "
+                                f"scheduled {s_cfg.entry_time} IST (max tolerance: {max_drift_seconds}s). "
+                                f"This likely indicates the system was down and the job is stale."
+                            )
+                            return
+
+                        logger.info(f"Scheduled run for {s_cfg.underlying} triggered at {current_time_str}")
                         try:
                             run_strategy(config, logger, strategy_config=s_cfg)
                         except Exception as e:
