@@ -21,6 +21,26 @@ class StopLossConfig(BaseModel):
     value: float = Field(default=50.0, gt=0, description="SL value (50 = 50% of premium)")
 
 
+class MomentumFilterConfig(BaseModel):
+    """Pre-entry momentum/trend filter configuration.
+
+    Skips trade entry when the underlying exhibits strong directional
+    movement in the period preceding the entry time.  This protects
+    short straddles from large intraday trends that cause outsized
+    losses.
+    """
+
+    enabled: bool = Field(default=True, description="Whether the momentum filter is active")
+    lookback_hours: float = Field(
+        default=2.0, gt=0,
+        description="Hours before entry to measure price change",
+    )
+    threshold_pct: float = Field(
+        default=1.2, gt=0,
+        description="Max allowed absolute % move; trades are skipped if exceeded",
+    )
+
+
 class StrategyConfig(BaseModel):
     """Strategy configuration."""
 
@@ -38,6 +58,7 @@ class StrategyConfig(BaseModel):
     order_type: str = Field(default="market_order")
     skip_weekends: bool = Field(default=True)
     stop_loss: Optional[StopLossConfig] = Field(default=None)
+    momentum_filter: Optional[MomentumFilterConfig] = Field(default=None)
     monitor_interval_sec: int = Field(default=5, gt=0)
 
 
@@ -137,6 +158,8 @@ class Config:
         settings = dict(strategy_settings)
         if "stop_loss" in settings and isinstance(settings["stop_loss"], dict):
             settings["stop_loss"] = StopLossConfig(**settings["stop_loss"])
+        if "momentum_filter" in settings and isinstance(settings["momentum_filter"], dict):
+            settings["momentum_filter"] = MomentumFilterConfig(**settings["momentum_filter"])
         return StrategyConfig(**settings)
 
     def _init_strategy_config(self):

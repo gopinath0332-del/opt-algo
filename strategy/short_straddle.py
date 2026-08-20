@@ -92,6 +92,108 @@ class ShortStraddleStrategy:
             return (spot_price * self.contract_value) / self.leverage
         return spot_price * self.contract_value * self.option_margin_requirement_pct
 
+    def _check_momentum_filter(self) -> bool:
+        """Check pre-entry momentum filter.
+
+        Fetches the underlying's spot price from `lookback_hours` ago
+        (via OHLCV candles) and compares it with the current spot price.
+        If the absolute percentage move exceeds `threshold_pct`, the
+        trade should be skipped.
+
+        Returns:
+            True if the trade should be SKIPPED (momentum too strong),
+            False if it is safe to proceed.
+        """
+        mf = self.strategy_config.momentum_filter
+        if mf is None or not mf.enabled:
+            return False
+
+        lookback_hours = mf.lookback_hours
+        threshold_pct = mf.threshold_pct
+        symbol = f"{self.underlying}USD"  # e.g. BTCUSD perpetual
+
+        logger.info(
+            f"Momentum filter: checking {symbol} price change over "
+            f"the last {lookback_hours}h (threshold: {threshold_pct}%)"
+        )
+
+        try:
+            # Fetch the spot price at the lookback point using a single
+            # 1-hour candle whose *close* represents the price ~N hours ago.
+            now_ts = int(time.time())
+            lookback_ts = int(now_ts - lookback_hours * 3600)
+
+            # Request 1h candles covering the lookback window.
+            candles = self.client.get_candles(
+                symbol=symbol,
+                resolution=60,  # 1-hour candles
+                start=lookback_ts,
+                end=now_ts,
+            )
+
+            if not candles:
+                logger.warning(
+                    "Momentum filter: no candle data returned — "
+                    "proceeding with trade (filter skipped)"
+                )
+                return False
+
+            # The oldest candle's open gives the price at the lookback point.
+            # Candles are typically returned oldest-first from Delta Exchange.
+            oldest_candle = candles[0]
+            lookback_price = float(oldest_candle.get("open", 0))
+
+            # Current price: use the most recent candle's close.
+            latest_candle = candles[-1]
+            current_price = float(latest_candle.get("close", 0))
+
+            if lookback_price <= 0 or current_price <= 0:
+                logger.warning(
+                    f"Momentum filter: invalid prices "
+                    f"(lookback={lookback_price}, current={current_price}) — "
+                    f"proceeding with trade (filter skipped)"
+                )
+                return False
+
+            move_pct = abs(current_price - lookback_price) / lookback_price * 100
+
+            logger.info(
+                f"Momentum filter: {symbol} moved {move_pct:.2f}% in the last "
+                f"{lookback_hours}h (lookback=${lookback_price:,.2f} → "
+                f"current=${current_price:,.2f}, threshold={threshold_pct}%)"
+            )
+
+            if move_pct > threshold_pct:
+                direction = "UP" if current_price > lookback_price else "DOWN"
+                logger.warning(
+                    f"⚠️ Momentum filter TRIGGERED — {symbol} moved "
+                    f"{move_pct:.2f}% {direction} (>{threshold_pct}%). "
+                    f"Skipping trade entry."
+                )
+                self.notifier.send_status_message(
+                    f"⚠️ Momentum Filter — Trade Skipped ({self.underlying})",
+                    f"{symbol} moved **{move_pct:.2f}% {direction}** "
+                    f"in the {lookback_hours}h before entry.\n"
+                    f"Lookback price: **${lookback_price:,.2f}**\n"
+                    f"Current price: **${current_price:,.2f}**\n"
+                    f"Threshold: **{threshold_pct}%**\n\n"
+                    f"Trade entry skipped to avoid trending market.",
+                    color=15105570,  # Orange
+                )
+                return True
+
+            return False
+
+        except Exception as e:
+            # On any error fetching data, log and proceed with the trade
+            # (fail-open: we'd rather trade than miss due to a data glitch).
+            logger.warning(
+                f"Momentum filter: error checking price movement: {e} — "
+                f"proceeding with trade (filter skipped)",
+                exc_info=True,
+            )
+            return False
+
     def run(self, resume_state: Optional[Dict[str, Any]] = None) -> None:
         """Execute the full strategy cycle: entry → monitor → exit.
 
@@ -155,6 +257,11 @@ class ShortStraddleStrategy:
                     color=3447003, # Blue
                 )
             else:
+                # Step 0: Pre-entry momentum filter
+                if self._check_momentum_filter():
+                    logger.info("Trade skipped by momentum filter — ending strategy cycle.")
+                    return
+
                 # Step 1: Entry
                 self._execute_entry()
 
