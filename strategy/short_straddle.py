@@ -124,10 +124,12 @@ class ShortStraddleStrategy:
             lookback_ts = int(now_ts - lookback_hours * 3600)
 
             # Request 1h candles covering the lookback window.
+            # We subtract 1 hour (3600 seconds) from start to ensure we get the candle
+            # containing the lookback timestamp.
             candles = self.client.get_candles(
                 symbol=symbol,
                 resolution=60,  # 1-hour candles
-                start=lookback_ts,
+                start=lookback_ts - 3600,
                 end=now_ts,
             )
 
@@ -138,8 +140,10 @@ class ShortStraddleStrategy:
                 )
                 return False
 
-            # The oldest candle's open gives the price at the lookback point.
-            # Candles are typically returned oldest-first from Delta Exchange.
+            # Sort candles ascending by time to ensure oldest is first and newest is last.
+            # Delta Exchange API returns candles newest-first.
+            candles = sorted(candles, key=lambda x: x.get("time", 0))
+
             oldest_candle = candles[0]
             lookback_price = float(oldest_candle.get("open", 0))
 
