@@ -90,13 +90,16 @@ class ShortStraddleStrategy:
         # big_leg: which leg has the higher entry premium ('CALL' or 'PUT')
         # big_leg_entry_premium: actual fill price of the dominant leg
         # big_leg_explosion_pct: fractional threshold from config (e.g. 0.30)
+        # big_leg_min_ratio: minimum big/small ratio to activate guard (e.g. 2.0)
         self.big_leg: str = ""
         self.big_leg_entry_premium: float = 0.0
+        self.small_leg_entry_premium: float = 0.0
         self.big_leg_explosion_pct: float = (
             self.strategy_config.big_leg_explosion_pct / 100.0
             if self.strategy_config.big_leg_explosion_pct > 0
             else 0.0
         )
+        self.big_leg_min_ratio: float = self.strategy_config.big_leg_min_ratio
         # Tracks whether the explosion guard already closed the position inside
         # _wait_until_exit_time() so run() doesn't call _execute_exit again.
         self._explosion_exit_handled: bool = False
@@ -729,16 +732,38 @@ class ShortStraddleStrategy:
             if self.call_entry_premium >= self.put_entry_premium:
                 self.big_leg = "CALL"
                 self.big_leg_entry_premium = self.call_entry_premium
+                self.small_leg_entry_premium = self.put_entry_premium
             else:
                 self.big_leg = "PUT"
                 self.big_leg_entry_premium = self.put_entry_premium
-            logger.info(
-                f"Big-leg explosion guard ACTIVE — "
-                f"big leg: {self.big_leg} @ ${self.big_leg_entry_premium:.4f} | "
-                f"threshold: {self.big_leg_explosion_pct*100:.0f}% "
-                f"(exit if {self.big_leg} mark > "
-                f"${self.big_leg_entry_premium * (1 + self.big_leg_explosion_pct):.4f})"
+                self.small_leg_entry_premium = self.call_entry_premium
+
+            leg_ratio = (
+                self.big_leg_entry_premium / self.small_leg_entry_premium
+                if self.small_leg_entry_premium > 0
+                else float('inf')
             )
+
+            if leg_ratio >= self.big_leg_min_ratio:
+                logger.info(
+                    f"Big-leg explosion guard ACTIVE — "
+                    f"big leg: {self.big_leg} @ ${self.big_leg_entry_premium:.4f} | "
+                    f"small leg: ${self.small_leg_entry_premium:.4f} | "
+                    f"ratio: {leg_ratio:.1f}x (>= {self.big_leg_min_ratio:.0f}x required) | "
+                    f"threshold: {self.big_leg_explosion_pct*100:.0f}% "
+                    f"(exit if {self.big_leg} mark > "
+                    f"${self.big_leg_entry_premium * (1 + self.big_leg_explosion_pct):.4f})"
+                )
+            else:
+                logger.info(
+                    f"Big-leg explosion guard SKIPPED — "
+                    f"straddle is balanced: {self.big_leg} ${self.big_leg_entry_premium:.4f} "
+                    f"vs small leg ${self.small_leg_entry_premium:.4f} "
+                    f"(ratio {leg_ratio:.1f}x < {self.big_leg_min_ratio:.0f}x minimum). "
+                    f"Holding to expiry as usual."
+                )
+                # Deactivate guard for this trade by clearing the big_leg flag
+                self.big_leg = ""
         else:
             logger.info("Big-leg explosion guard DISABLED (big_leg_explosion_pct = 0)")
 
@@ -793,23 +818,28 @@ class ShortStraddleStrategy:
     def _check_big_leg_explosion(self) -> bool:
         """Check if the dominant leg has moved above the explosion threshold.
 
-        The 'big leg' is whichever leg had the higher fill price at entry.
-        If its current mark price is >= entry * (1 + big_leg_explosion_pct),
-        we treat this as an imminent large loss and exit immediately.
+        TWO conditions must both be true for the guard to fire:
+
+        Condition 1 — Asymmetry (evaluated at entry, not here):
+            big_leg_entry / small_leg_entry >= big_leg_min_ratio  (default 2x)
+            If not met, big_leg is set to "" at entry and this method returns
+            False immediately (guard stays silent for balanced straddles).
+
+        Condition 2 — Explosion during window (evaluated here every 30s):
+            current_big_leg_mark / big_leg_entry >= big_leg_explosion_pct (+30%)
 
         Backtest insight (535 trades, Jan 2025–Jun 2026):
-          >25% move → 86.2% loss rate
-          >30% move → 87%+ loss rate
-          >100% move → 100% loss rate
+          ratio >= 2x + explosion >30%  →  100% loss rate  (97/97 trades)
+          ratio <  2x + explosion >30%  →   63.6% loss rate (skip these)
 
         Returns:
-            True  — explosion detected; caller should trigger early exit
-            False — within acceptable range; continue holding
+            True  — both conditions met; caller should trigger early exit
+            False — guard silent (balanced straddle or no explosion yet)
         """
         if not self.big_leg or self.big_leg_entry_premium <= 0:
-            return False
+            return False   # Condition 1 failed at entry — balanced straddle
         if self.big_leg_explosion_pct <= 0:
-            return False  # guard is disabled
+            return False   # guard disabled in config
 
         try:
             if self.big_leg == "CALL":
@@ -821,11 +851,13 @@ class ShortStraddleStrategy:
             threshold_price = self.big_leg_entry_premium * (1 + self.big_leg_explosion_pct)
 
             logger.debug(
-                f"Big-leg check: {self.big_leg} "
+                f"Big-leg check [{self.big_leg}] "
                 f"entry=${self.big_leg_entry_premium:.4f} "
                 f"current=${current:.4f} "
                 f"move={move_pct*100:+.1f}% "
-                f"threshold=${threshold_price:.4f} ({self.big_leg_explosion_pct*100:.0f}%)"
+                f"(trigger at ${threshold_price:.4f} / +{self.big_leg_explosion_pct*100:.0f}%) "
+                f"small_leg=${self.small_leg_entry_premium:.4f} "
+                f"ratio={self.big_leg_entry_premium/max(self.small_leg_entry_premium,0.001):.1f}x"
             )
 
             if move_pct >= self.big_leg_explosion_pct:
@@ -834,7 +866,8 @@ class ShortStraddleStrategy:
                     f"{move_pct*100:+.1f}% above entry "
                     f"(entry=${self.big_leg_entry_premium:.4f} → "
                     f"current=${current:.4f}, "
-                    f"threshold={self.big_leg_explosion_pct*100:.0f}%). "
+                    f"threshold={self.big_leg_explosion_pct*100:.0f}%, "
+                    f"ratio={self.big_leg_entry_premium/max(self.small_leg_entry_premium,0.001):.1f}x). "
                     f"Triggering early exit."
                 )
                 # Calculate indicative current MTM loss for the alert
@@ -868,6 +901,7 @@ class ShortStraddleStrategy:
             logger.warning(f"Big-leg explosion check error: {e} — skipping check")
 
         return False
+
 
     def _wait_until_exit_time(self) -> None:
         """Poll every 30s until exit time, checking for big-leg explosion.

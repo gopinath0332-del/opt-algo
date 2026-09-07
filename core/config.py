@@ -73,6 +73,15 @@ class StrategyConfig(BaseModel):
             "0.0 = disabled. 0.30 = exit when big leg moves >30%% above entry."
         ),
     )
+    big_leg_min_ratio: float = Field(
+        default=2.0, ge=1.0,
+        description=(
+            "Minimum ratio of big_leg_entry / small_leg_entry required to activate "
+            "the explosion guard. 2.0 = guard only fires when big leg is at least 2x "
+            "the small leg. Backtest (535 trades): ratio>=2x explosions lose 100%%, "
+            "ratio<2x explosions lose only 63.6%% — balanced straddles should be ignored."
+        ),
+    )
 
 
 class NotificationsConfig(BaseModel):
