@@ -82,6 +82,16 @@ class StrategyConfig(BaseModel):
             "ratio<2x explosions lose only 63.6%% — balanced straddles should be ignored."
         ),
     )
+    big_leg_skip_ratio: float = Field(
+        default=0.0, ge=0.0,
+        description=(
+            "Pre-entry filter: skip the trade entirely when "
+            "max(call_mark, put_mark) / min(call_mark, put_mark) >= this value. "
+            "0.0 = disabled. 10.0 = skip when one leg is 10x+ the other. "
+            "Backtest: ratio>=10x trades have avg PnL near zero or negative "
+            "(10-15x: -$6.94, 15-20x: +$3.04, 20-50x: +$3.71 avg PnL)."
+        ),
+    )
 
 
 class NotificationsConfig(BaseModel):

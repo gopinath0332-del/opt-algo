@@ -100,6 +100,7 @@ class ShortStraddleStrategy:
             else 0.0
         )
         self.big_leg_min_ratio: float = self.strategy_config.big_leg_min_ratio
+        self.big_leg_skip_ratio: float = self.strategy_config.big_leg_skip_ratio
         # Tracks whether the explosion guard already closed the position inside
         # _wait_until_exit_time() so run() doesn't call _execute_exit again.
         self._explosion_exit_handled: bool = False
@@ -364,6 +365,43 @@ class ShortStraddleStrategy:
         self.call_entry_mark = self.call_entry_premium
         self.put_entry_mark = self.put_entry_premium
         self.entry_slippage_usd = 0.0
+
+        # ── Pre-entry ratio filter ────────────────────────────────────────
+        # Skip the trade when the straddle is extremely one-sided.
+        # Backtest (535 trades): ratio >= 10x → avg PnL near-zero or negative.
+        if self.big_leg_skip_ratio > 0 and self.entry_premium > 0:
+            _big_mark  = max(self.call_entry_premium, self.put_entry_premium)
+            _small_mark = min(self.call_entry_premium, self.put_entry_premium)
+            _entry_ratio = _big_mark / _small_mark if _small_mark > 0 else float('inf')
+
+            if _entry_ratio >= self.big_leg_skip_ratio:
+                _big_leg_name  = "CALL" if self.call_entry_premium >= self.put_entry_premium else "PUT"
+                _small_leg_name = "PUT"  if self.call_entry_premium >= self.put_entry_premium else "CALL"
+                logger.warning(
+                    f"⛔ Pre-entry ratio filter TRIGGERED — "
+                    f"{_big_leg_name} mark ${_big_mark:.4f} vs "
+                    f"{_small_leg_name} mark ${_small_mark:.4f} — "
+                    f"ratio {_entry_ratio:.1f}x >= {self.big_leg_skip_ratio:.0f}x threshold. "
+                    f"Skipping trade entry. "
+                    f"(Backtest: ratio>={self.big_leg_skip_ratio:.0f}x avg PnL ≈ $0 or negative)"
+                )
+                self.notifier.send_status_message(
+                    f"⛔ Extreme Ratio Filter — Trade Skipped ({self.underlying})",
+                    f"Strike: **{self.atm_strike}**\n"
+                    f"{_big_leg_name}: `{self.call_symbol if _big_leg_name == 'CALL' else self.put_symbol}` "
+                    f"mark **${_big_mark:.4f}**\n"
+                    f"{_small_leg_name}: `{self.put_symbol if _big_leg_name == 'CALL' else self.call_symbol}` "
+                    f"mark **${_small_mark:.4f}**\n"
+                    f"Ratio: **{_entry_ratio:.1f}x** (threshold: {self.big_leg_skip_ratio:.0f}x)\n\n"
+                    f"Backtest finding: ratio >= {self.big_leg_skip_ratio:.0f}x trades have "
+                    f"near-zero or negative avg PnL. Skipping to preserve capital.",
+                    color=15105570,  # Orange
+                )
+                return  # is_position_open stays False → run() aborts cleanly
+            else:
+                logger.info(
+                    f"Pre-entry ratio filter: {_entry_ratio:.1f}x < {self.big_leg_skip_ratio:.0f}x — OK to enter"
+                )
 
         # ---------------------------------------------------------------
         # Dynamic lot size calculation
