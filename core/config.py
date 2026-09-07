@@ -65,6 +65,33 @@ class StrategyConfig(BaseModel):
     momentum_filter: Optional[MomentumFilterConfig] = Field(default=None)
     otm_steps: int = Field(default=0, ge=0, description="Steps OTM to select (0 = ATM, 1 = OTM+1, 2 = OTM+2)")
     monitor_interval_sec: int = Field(default=5, gt=0)
+    big_leg_explosion_pct: float = Field(
+        default=0.0, ge=0.0,
+        description=(
+            "Exit early when the dominant leg (higher entry premium) rises above "
+            "this fraction of its entry price during the settlement window. "
+            "0.0 = disabled. 0.30 = exit when big leg moves >30%% above entry."
+        ),
+    )
+    big_leg_min_ratio: float = Field(
+        default=2.0, ge=1.0,
+        description=(
+            "Minimum ratio of big_leg_entry / small_leg_entry required to activate "
+            "the explosion guard. 2.0 = guard only fires when big leg is at least 2x "
+            "the small leg. Backtest (535 trades): ratio>=2x explosions lose 100%%, "
+            "ratio<2x explosions lose only 63.6%% — balanced straddles should be ignored."
+        ),
+    )
+    big_leg_skip_ratio: float = Field(
+        default=0.0, ge=0.0,
+        description=(
+            "Pre-entry filter: skip the trade entirely when "
+            "max(call_mark, put_mark) / min(call_mark, put_mark) >= this value. "
+            "0.0 = disabled. 10.0 = skip when one leg is 10x+ the other. "
+            "Backtest: ratio>=10x trades have avg PnL near zero or negative "
+            "(10-15x: -$6.94, 15-20x: +$3.04, 20-50x: +$3.71 avg PnL)."
+        ),
+    )
 
 
 class NotificationsConfig(BaseModel):
