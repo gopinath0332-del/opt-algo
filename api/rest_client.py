@@ -331,13 +331,14 @@ class DeltaRestClient:
         return option_products
 
     def find_atm_options(
-        self, underlying: str = "BTC", spot_price: Optional[float] = None
+        self, underlying: str = "BTC", spot_price: Optional[float] = None, otm_steps: int = 0
     ) -> Tuple[Dict[str, Any], Dict[str, Any], float]:
-        """Find the ATM Call and Put options for the nearest expiry.
+        """Find the ATM (or OTM) Call and Put options for the nearest expiry.
 
         Args:
             underlying: Underlying asset
             spot_price: Current spot price (fetched automatically if not provided)
+            otm_steps: Steps OTM to select (0 = ATM, 1 = OTM+1, 2 = OTM+2, etc.)
 
         Returns:
             Tuple of (call_product, put_product, atm_strike)
@@ -416,27 +417,47 @@ class DeltaRestClient:
                 elif ctype == "put_options":
                     puts_by_strike[s_float] = p
 
-            # Prefer strikes that have BOTH call and put available for straddle
+            # Prefer strikes that have BOTH call and put available for straddle/strangle
             common_strikes = set(calls_by_strike.keys()).intersection(set(puts_by_strike.keys()))
 
             if not common_strikes:
                 continue
 
             # Find ATM strike closest to spot price among strikes available for THIS expiry
+            sorted_common = sorted(common_strikes)
             atm_strike = min(common_strikes, key=lambda s: abs(s - spot_price))
-            call_product = calls_by_strike[atm_strike]
-            put_product = puts_by_strike[atm_strike]
+            settlement_str = calls_by_strike[atm_strike].get("settlement_time") or calls_by_strike[atm_strike].get("expiry_date") or ""
 
-            settlement_str = call_product.get("settlement_time") or call_product.get("expiry_date") or ""
             logger.info(
                 f"ATM strike for {underlying} (nearest expiry: {settlement_str}): "
                 f"{atm_strike} (spot: {spot_price:,.2f})"
             )
-            logger.info(
-                f"Selected ATM options — "
-                f"Call: {call_product.get('symbol')} (ID: {call_product.get('id')}), "
-                f"Put: {put_product.get('symbol')} (ID: {put_product.get('id')})"
-            )
+
+            if otm_steps > 0:
+                atm_idx = sorted_common.index(atm_strike)
+                call_idx = min(atm_idx + otm_steps, len(sorted_common) - 1)
+                put_idx = max(atm_idx - otm_steps, 0)
+
+                call_strike = sorted_common[call_idx]
+                put_strike = sorted_common[put_idx]
+
+                call_product = calls_by_strike[call_strike]
+                put_product = puts_by_strike[put_strike]
+
+                logger.info(
+                    f"Selected OTM+{otm_steps} options — "
+                    f"ATM: {atm_strike} | Call Strike: {call_strike} ({call_product.get('symbol')}) | "
+                    f"Put Strike: {put_strike} ({put_product.get('symbol')})"
+                )
+            else:
+                call_product = calls_by_strike[atm_strike]
+                put_product = puts_by_strike[atm_strike]
+
+                logger.info(
+                    f"Selected ATM options — "
+                    f"Call: {call_product.get('symbol')} (ID: {call_product.get('id')}), "
+                    f"Put: {put_product.get('symbol')} (ID: {put_product.get('id')})"
+                )
 
             return call_product, put_product, atm_strike
 

@@ -123,7 +123,12 @@ def run_strategy(config, logger, strategy_config=None):
     )
 
     # Create and run strategy
-    strategy = ShortStraddleStrategy(config, client, notifier, strategy_config=strat)
+    if getattr(strat, "otm_steps", 0) > 0:
+        from strategy.short_strangle import ShortStrangleStrategy
+        strategy = ShortStrangleStrategy(config, client, notifier, strategy_config=strat)
+    else:
+        from strategy.short_straddle import ShortStraddleStrategy
+        strategy = ShortStraddleStrategy(config, client, notifier, strategy_config=strat)
     strategy.run()
 
     logger.info(f"Strategy execution complete for {strat.underlying}")
@@ -271,7 +276,12 @@ def check_and_resume_active_trades(config, logger):
 
                     client = DeltaRestClient(config)
                     notifier = NotificationManager(config)
-                    strategy = ShortStraddleStrategy(config, client, notifier, strategy_config=strat)
+                    if getattr(strat, "otm_steps", 0) > 0:
+                        from strategy.short_strangle import ShortStrangleStrategy
+                        strategy = ShortStrangleStrategy(config, client, notifier, strategy_config=strat)
+                    else:
+                        from strategy.short_straddle import ShortStraddleStrategy
+                        strategy = ShortStraddleStrategy(config, client, notifier, strategy_config=strat)
                     strategy.run(resume_state=recovered_state)
                     logger.info(f"Resumed trade execution complete for {strat.underlying}.")
                 else:

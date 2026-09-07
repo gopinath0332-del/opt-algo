@@ -101,3 +101,38 @@ def test_find_atm_options_xaut(client):
     assert call_prod["symbol"] == "C-XAUT-4060-270726"
     assert put_prod["symbol"] == "P-XAUT-4060-270726"
 
+
+def test_find_atm_options_with_otm_steps(client):
+    now = datetime.now(timezone.utc)
+    daily_expiry = (now + timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+
+    strikes = [64000, 64200, 64400, 64600, 64800]
+    mock_products = []
+    pid = 1
+    for s in strikes:
+        mock_products.append({
+            "id": pid, "symbol": f"C-BTC-{s}-DAILY", "contract_type": "call_options",
+            "strike_price": str(s), "settlement_time": daily_expiry, "state": "live",
+            "underlying_asset": {"symbol": "BTC"}
+        })
+        pid += 1
+        mock_products.append({
+            "id": pid, "symbol": f"P-BTC-{s}-DAILY", "contract_type": "put_options",
+            "strike_price": str(s), "settlement_time": daily_expiry, "state": "live",
+            "underlying_asset": {"symbol": "BTC"}
+        })
+        pid += 1
+
+    client.get_option_products = MagicMock(return_value=mock_products)
+
+    # Spot is 64410 -> ATM is 64400
+    # otm_steps = 2 -> Call = 64800 (+2 strikes), Put = 64000 (-2 strikes)
+    call_prod, put_prod, atm_strike = client.find_atm_options(
+        underlying="BTC", spot_price=64410.0, otm_steps=2
+    )
+
+    assert atm_strike == 64400.0
+    assert call_prod["symbol"] == "C-BTC-64800-DAILY"
+    assert put_prod["symbol"] == "P-BTC-64000-DAILY"
+
+

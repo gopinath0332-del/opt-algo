@@ -7,7 +7,7 @@ straddle_strategies:
     entry_time: "17:00"         # IST — daily entry time (5:00 PM IST)
     exit_time: "17:30"          # IST — daily expiry / settlement time (5:30 PM IST)
     timezone: "Asia/Kolkata"    # IST
-    capital_allocation_pct: 50   # % of available wallet balance to deploy per trade
+    capital_allocation_pct: 40   # % of available wallet balance to deploy per trade
     lot_size: null              # Enable dynamic lot sizing (null)
     max_lot_size: 1000          # Capped at maximum of 1,000 lots per leg
     leverage: 200               # 200x leverage
@@ -19,6 +19,26 @@ straddle_strategies:
       lookback_hours: 2          # Check price change over the 2 hours before entry
       threshold_pct: 1.2         # Skip trade if BTC moved more than 1.2% in that window
     monitor_interval_sec: 60     # Poll interval when SL is active (unused when stop_loss: null)
+
+  - name: "btc_otm2_revmom_strangle"
+    underlying: "BTC"           # BTC options
+    entry_time: "13:00"         # IST — daily entry time (1:00 PM IST / 07:30 UTC)
+    exit_time: "17:30"          # IST — daily expiry / settlement time (5:30 PM IST)
+    timezone: "Asia/Kolkata"    # IST
+    capital_allocation_pct: 30  # 30% of available wallet balance to deploy per trade
+    lot_size: null              # Enable dynamic lot sizing (null)
+    max_lot_size: 1000          # Capped at maximum of 1,000 lots per leg
+    leverage: 200               # 200x leverage
+    order_type: "market_order"  # Market orders for instant fill
+    skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
+    stop_loss: null             # No SL — let trades expire at settlement
+    otm_steps: 2                # Select ATM±2 strikes (±$400)
+    momentum_filter:
+      enabled: true             # Reverse momentum filter
+      reverse: true             # Enter ONLY when move > threshold
+      lookback_hours: 2         # Check price change over the 2 hours before entry
+      threshold_pct: 0.5        # Enter when |move| > 0.5%
+    monitor_interval_sec: 60    # Poll interval when SL is active (unused when stop_loss: null)
 
   - name: "xaut_short_straddle"
     enabled: false               # Temporarily disabled

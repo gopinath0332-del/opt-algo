@@ -25,19 +25,23 @@ class MomentumFilterConfig(BaseModel):
     """Pre-entry momentum/trend filter configuration.
 
     Skips trade entry when the underlying exhibits strong directional
-    movement in the period preceding the entry time.  This protects
+    movement in the period preceding the entry time. This protects
     short straddles from large intraday trends that cause outsized
-    losses.
+    losses. If reverse=True, enters ONLY when momentum exceeds threshold.
     """
 
     enabled: bool = Field(default=True, description="Whether the momentum filter is active")
+    reverse: bool = Field(
+        default=False,
+        description="If True, enter ONLY when |move| > threshold_pct (reverse momentum filter)",
+    )
     lookback_hours: float = Field(
         default=2.0, gt=0,
         description="Hours before entry to measure price change",
     )
     threshold_pct: float = Field(
         default=1.2, gt=0,
-        description="Max allowed absolute % move; trades are skipped if exceeded",
+        description="Max allowed absolute % move (or min required if reverse=True)",
     )
 
 
@@ -59,6 +63,7 @@ class StrategyConfig(BaseModel):
     skip_weekends: bool = Field(default=True)
     stop_loss: Optional[StopLossConfig] = Field(default=None)
     momentum_filter: Optional[MomentumFilterConfig] = Field(default=None)
+    otm_steps: int = Field(default=0, ge=0, description="Steps OTM to select (0 = ATM, 1 = OTM+1, 2 = OTM+2)")
     monitor_interval_sec: int = Field(default=5, gt=0)
 
 

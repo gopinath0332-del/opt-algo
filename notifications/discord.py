@@ -125,6 +125,7 @@ class DiscordNotifier:
         exit_call_premium: float,
         exit_put_premium: float,
         mode: str = "live",
+        strategy_name: str = "Short Straddle",
         exit_slippage_usd: Optional[float] = None,
         total_slippage_usd: Optional[float] = None,
         exchange_realized_pnl: Optional[float] = None,
@@ -214,7 +215,7 @@ class DiscordNotifier:
         message += f"\nTime: {time.strftime('%H:%M:%S IST')}"
 
         formatted = f"```ansi\n{message}\n```"
-        title = f"{pnl_emoji} SHORT STRADDLE EXIT — {underlying} | {exit_reason}"
+        title = f"{pnl_emoji} {strategy_name.upper()} EXIT — {underlying} | {exit_reason}"
         color = 5763719 if realized_pnl >= 0 else 15548997  # Green or Red
 
         self._send_embed(title, formatted, color)
