@@ -14,11 +14,17 @@ straddle_strategies:
     order_type: "market_order"  # Market orders for instant fill
     skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
     stop_loss: null
+    # Big-leg explosion guard — exit early if the dominant leg (higher-premium)
+    # rises more than 30% above its entry price during the settlement window.
+    # Backtest (535 trades): >30% explosion → 87%+ loss rate.
+    # Set to 0 to disable. Applies only to the 30-min straddle window.
+    big_leg_explosion_pct: 30
     momentum_filter:
       enabled: true              # Skip entry if BTC exhibits strong pre-entry momentum
       lookback_hours: 2          # Check price change over the 2 hours before entry
       threshold_pct: 1.2         # Skip trade if BTC moved more than 1.2% in that window
     monitor_interval_sec: 60     # Poll interval when SL is active (unused when stop_loss: null)
+
 
   - name: "btc_otm2_revmom_strangle"
     underlying: "BTC"           # BTC options

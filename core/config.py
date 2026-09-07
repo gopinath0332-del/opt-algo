@@ -65,6 +65,14 @@ class StrategyConfig(BaseModel):
     momentum_filter: Optional[MomentumFilterConfig] = Field(default=None)
     otm_steps: int = Field(default=0, ge=0, description="Steps OTM to select (0 = ATM, 1 = OTM+1, 2 = OTM+2)")
     monitor_interval_sec: int = Field(default=5, gt=0)
+    big_leg_explosion_pct: float = Field(
+        default=0.0, ge=0.0,
+        description=(
+            "Exit early when the dominant leg (higher entry premium) rises above "
+            "this fraction of its entry price during the settlement window. "
+            "0.0 = disabled. 0.30 = exit when big leg moves >30%% above entry."
+        ),
+    )
 
 
 class NotificationsConfig(BaseModel):

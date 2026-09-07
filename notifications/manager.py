@@ -53,6 +53,12 @@ class NotificationManager:
             self.discord.send_sl_alert(**kwargs)
             logger.info("Stop-loss alert sent")
 
+    def send_explosion_alert(self, **kwargs) -> None:
+        """Send big-leg explosion early-exit alert to all enabled channels."""
+        if self.discord and self.config.notifications.alert_on_sl_hit:
+            self.discord.send_explosion_alert(**kwargs)
+            logger.info("Big-leg explosion alert sent")
+
     def send_error(self, title: str, error: str) -> None:
         """Send error alert to error webhook."""
         if self.discord_error and self.config.notifications.alert_on_error:

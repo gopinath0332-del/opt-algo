@@ -261,6 +261,62 @@ class DiscordNotifier:
 
         self._send_embed(title, formatted, color)
 
+    def send_explosion_alert(
+        self,
+        underlying: str,
+        big_leg: str,
+        big_leg_entry: float,
+        big_leg_current: float,
+        move_pct: float,
+        threshold_pct: float,
+        mtm_loss: float,
+        entry_premium: float,
+        mode: str = "live",
+    ) -> None:
+        """Send a big-leg explosion early-exit notification.
+
+        Fired when the dominant option leg moves more than `threshold_pct`
+        above its entry price, indicating an imminent large loss.
+
+        Args:
+            underlying: Underlying asset (e.g. 'BTC')
+            big_leg: 'CALL' or 'PUT'
+            big_leg_entry: Fill price of the big leg at entry
+            big_leg_current: Current mark price of the big leg
+            move_pct: How much the leg moved (e.g. 35.2 for +35.2%)
+            threshold_pct: Configured explosion threshold (e.g. 30.0)
+            mtm_loss: Indicative current MTM loss (current_total - entry_total)
+            entry_premium: Total straddle premium collected at entry
+            mode: 'live' or 'paper'
+        """
+        mode_color = "1;32" if mode == "live" else "1;36"
+        loss_color = "0;31" if mtm_loss < 0 else "0;32"
+        leg_color = "1;31"  # bright red for the exploding leg
+
+        message = (
+            f"Mode: \u001b[{mode_color}m{mode.upper()}\u001b[0m\n"
+            f"\n"
+            f"\u001b[{leg_color}m🔥 BIG-LEG EXPLOSION GUARD TRIGGERED\u001b[0m\n"
+            f"\n"
+            f"Exploding Leg: \u001b[{leg_color}m{big_leg}\u001b[0m\n"
+            f"  Entry:     \u001b[0;36m${self._f(big_leg_entry)}\u001b[0m\n"
+            f"  Current:   \u001b[{leg_color}m${self._f(big_leg_current)}\u001b[0m\n"
+            f"  Move:      \u001b[{leg_color}m+{move_pct:.1f}%\u001b[0m  "
+            f"(threshold: {threshold_pct:.0f}%)\n"
+            f"\n"
+            f"Entry Premium: \u001b[0;36m${self._f(entry_premium)}\u001b[0m\n"
+            f"Current MTM:   \u001b[{loss_color}m${self._f(mtm_loss)}\u001b[0m\n"
+            f"\n"
+            f"Action: \u001b[1;37mExiting both legs immediately...\u001b[0m\n"
+            f"Time: {time.strftime('%H:%M:%S IST')}"
+        )
+
+        formatted = f"```ansi\n{message}\n```"
+        title = f"🔥 BIG-LEG EXPLOSION — {underlying} {big_leg} +{move_pct:.1f}% | Early Exit"
+        color = 15105570  # Orange
+
+        self._send_embed(title, formatted, color)
+
     def send_status_message(self, title: str, message: str, color: int = 3447003) -> None:
         """Send a general status message.
 

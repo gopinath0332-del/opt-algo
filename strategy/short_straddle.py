@@ -86,6 +86,21 @@ class ShortStraddleStrategy:
         self.contract_value: float = 0.001
         self.entry_time_us: int = 0
 
+        # Big-leg explosion guard
+        # big_leg: which leg has the higher entry premium ('CALL' or 'PUT')
+        # big_leg_entry_premium: actual fill price of the dominant leg
+        # big_leg_explosion_pct: fractional threshold from config (e.g. 0.30)
+        self.big_leg: str = ""
+        self.big_leg_entry_premium: float = 0.0
+        self.big_leg_explosion_pct: float = (
+            self.strategy_config.big_leg_explosion_pct / 100.0
+            if self.strategy_config.big_leg_explosion_pct > 0
+            else 0.0
+        )
+        # Tracks whether the explosion guard already closed the position inside
+        # _wait_until_exit_time() so run() doesn't call _execute_exit again.
+        self._explosion_exit_handled: bool = False
+
     def _calculate_margin_per_leg(self, spot_price: float) -> float:
         """Calculate estimated margin per leg per lot."""
         if self.leverage and self.leverage > 0:
@@ -281,9 +296,10 @@ class ShortStraddleStrategy:
                 if not sl_hit:
                     self._execute_exit(reason="scheduled_exit")
             else:
-                # No stop-loss — just wait for exit time (no API polling needed)
+                # No stop-loss — poll every 30s for big-leg explosion or exit time
                 self._wait_until_exit_time()
-                self._execute_exit(reason="scheduled_exit")
+                if not self._explosion_exit_handled:
+                    self._execute_exit(reason="scheduled_exit")
 
         except Exception as e:
             logger.error(f"Strategy execution failed: {e}", exc_info=True)
@@ -708,6 +724,24 @@ class ShortStraddleStrategy:
         self.entry_premium = self.call_entry_premium + self.put_entry_premium
         self.sl_threshold = self.entry_premium * self.sl_pct if self.sl_pct is not None else None
 
+        # ── Identify big leg for explosion guard ──────────────────────────────
+        if self.big_leg_explosion_pct > 0:
+            if self.call_entry_premium >= self.put_entry_premium:
+                self.big_leg = "CALL"
+                self.big_leg_entry_premium = self.call_entry_premium
+            else:
+                self.big_leg = "PUT"
+                self.big_leg_entry_premium = self.put_entry_premium
+            logger.info(
+                f"Big-leg explosion guard ACTIVE — "
+                f"big leg: {self.big_leg} @ ${self.big_leg_entry_premium:.4f} | "
+                f"threshold: {self.big_leg_explosion_pct*100:.0f}% "
+                f"(exit if {self.big_leg} mark > "
+                f"${self.big_leg_entry_premium * (1 + self.big_leg_explosion_pct):.4f})"
+            )
+        else:
+            logger.info("Big-leg explosion guard DISABLED (big_leg_explosion_pct = 0)")
+
         # Send Discord entry notification
         margin_usd = 2 * self._calculate_margin_per_leg(self.spot_price) * self.lot_size
         self.notifier.send_entry_alert(
@@ -756,10 +790,95 @@ class ShortStraddleStrategy:
 
         logger.info("✅ Straddle entry complete")
 
+    def _check_big_leg_explosion(self) -> bool:
+        """Check if the dominant leg has moved above the explosion threshold.
+
+        The 'big leg' is whichever leg had the higher fill price at entry.
+        If its current mark price is >= entry * (1 + big_leg_explosion_pct),
+        we treat this as an imminent large loss and exit immediately.
+
+        Backtest insight (535 trades, Jan 2025–Jun 2026):
+          >25% move → 86.2% loss rate
+          >30% move → 87%+ loss rate
+          >100% move → 100% loss rate
+
+        Returns:
+            True  — explosion detected; caller should trigger early exit
+            False — within acceptable range; continue holding
+        """
+        if not self.big_leg or self.big_leg_entry_premium <= 0:
+            return False
+        if self.big_leg_explosion_pct <= 0:
+            return False  # guard is disabled
+
+        try:
+            if self.big_leg == "CALL":
+                current = self._get_current_premium(self.call_product_id, self.call_symbol)
+            else:
+                current = self._get_current_premium(self.put_product_id, self.put_symbol)
+
+            move_pct = (current - self.big_leg_entry_premium) / self.big_leg_entry_premium
+            threshold_price = self.big_leg_entry_premium * (1 + self.big_leg_explosion_pct)
+
+            logger.debug(
+                f"Big-leg check: {self.big_leg} "
+                f"entry=${self.big_leg_entry_premium:.4f} "
+                f"current=${current:.4f} "
+                f"move={move_pct*100:+.1f}% "
+                f"threshold=${threshold_price:.4f} ({self.big_leg_explosion_pct*100:.0f}%)"
+            )
+
+            if move_pct >= self.big_leg_explosion_pct:
+                logger.warning(
+                    f"🔥 BIG-LEG EXPLOSION — {self.big_leg} moved "
+                    f"{move_pct*100:+.1f}% above entry "
+                    f"(entry=${self.big_leg_entry_premium:.4f} → "
+                    f"current=${current:.4f}, "
+                    f"threshold={self.big_leg_explosion_pct*100:.0f}%). "
+                    f"Triggering early exit."
+                )
+                # Calculate indicative current MTM loss for the alert
+                if self.big_leg == "CALL":
+                    other_current = self._get_current_premium(
+                        self.put_product_id, self.put_symbol
+                    )
+                    current_total = current + other_current
+                else:
+                    other_current = self._get_current_premium(
+                        self.call_product_id, self.call_symbol
+                    )
+                    current_total = other_current + current
+
+                mtm_loss = current_total - self.entry_premium
+
+                self.notifier.send_explosion_alert(
+                    underlying=self.underlying,
+                    big_leg=self.big_leg,
+                    big_leg_entry=self.big_leg_entry_premium,
+                    big_leg_current=current,
+                    move_pct=move_pct * 100,
+                    threshold_pct=self.big_leg_explosion_pct * 100,
+                    mtm_loss=mtm_loss,
+                    entry_premium=self.entry_premium,
+                    mode=self.mode,
+                )
+                return True
+
+        except Exception as e:
+            logger.warning(f"Big-leg explosion check error: {e} — skipping check")
+
+        return False
+
     def _wait_until_exit_time(self) -> None:
-        """Sleep until exit time without polling. Used when stop-loss is disabled."""
+        """Poll every 30s until exit time, checking for big-leg explosion.
+
+        Replaces the old passive sleep so that the big-leg explosion guard
+        is active even when stop_loss is disabled (the common production config).
+        If an explosion is detected, exits immediately and returns early so
+        the caller does NOT call _execute_exit again.
+        """
         logger.info("=" * 60)
-        logger.info("STEP 2: WAITING — No stop-loss configured, sleeping until exit time")
+        logger.info("STEP 2: WAITING — Polling every 30s for big-leg explosion or exit time")
         logger.info("=" * 60)
 
         exit_time_str = self.strategy_config.exit_time
@@ -768,11 +887,44 @@ class ShortStraddleStrategy:
         exit_time = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
 
         remaining = (exit_time - now).total_seconds()
-        if remaining > 0:
-            logger.info(f"Sleeping {remaining:.0f}s until {exit_time_str} IST")
-            time.sleep(remaining)
+        if remaining <= 0:
+            logger.info("Already past exit time — proceeding immediately")
+            return
 
-        logger.info("Exit time reached — proceeding to scheduled exit")
+        explosion_guard_active = self.big_leg_explosion_pct > 0 and bool(self.big_leg)
+        if explosion_guard_active:
+            logger.info(
+                f"Sleeping until {exit_time_str} IST with 30s poll | "
+                f"Big-leg explosion guard: {self.big_leg} must stay < "
+                f"${self.big_leg_entry_premium * (1 + self.big_leg_explosion_pct):.4f} "
+                f"({self.big_leg_explosion_pct*100:.0f}% above ${self.big_leg_entry_premium:.4f})"
+            )
+        else:
+            logger.info(
+                f"Sleeping {remaining:.0f}s until {exit_time_str} IST "
+                f"(big-leg guard disabled — passive wait)"
+            )
+
+        POLL_INTERVAL = 30  # seconds — fast enough to catch 17:00–17:30 explosions
+
+        while True:
+            now = datetime.now(IST)
+            if now >= exit_time:
+                logger.info("Exit time reached — proceeding to scheduled exit")
+                return  # caller will call _execute_exit(reason='scheduled_exit')
+
+            # ── Big-leg explosion check ───────────────────────────────────────
+            if explosion_guard_active:
+                try:
+                    if self._check_big_leg_explosion():
+                        # Exit immediately — do NOT return to caller for another exit call
+                        self._execute_exit(reason="big_leg_explosion")
+                        self._explosion_exit_handled = True
+                        return
+                except Exception as e:
+                    logger.warning(f"Explosion guard poll error: {e}")
+
+            time.sleep(POLL_INTERVAL)
 
     def _monitor_stop_loss(self) -> bool:
         """Monitor the combined position for stop-loss.
