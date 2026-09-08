@@ -40,6 +40,7 @@ straddle_strategies:
 
 
   - name: "btc_otm2_revmom_strangle"
+    enabled: false              # Temporarily disabled
     underlying: "BTC"           # BTC options
     entry_time: "13:00"         # IST — daily entry time (1:00 PM IST / 07:30 UTC)
     exit_time: "17:30"          # IST — daily expiry / settlement time (5:30 PM IST)
