@@ -14,15 +14,9 @@ straddle_strategies:
     order_type: "market_order"  # Market orders for instant fill
     skip_weekends: false        # Skip trading on Saturdays and Sundays (UTC/IST)
     stop_loss: null
-    # Big-leg explosion guard — exit early if the dominant leg (higher-premium)
-    # rises more than 30% above its entry price during the settlement window.
-    # Backtest (535 trades): >30% explosion → 87%+ loss rate.
-    # Set to 0 to disable. Applies only to the 30-min straddle window.
-    big_leg_explosion_pct: 30
-    # Minimum asymmetry ratio (big_leg_entry / small_leg_entry) required to
-    # activate the guard. Backtest finding:
-    #   ratio >= 2x: ALL explosions ended in loss (100%, 97/97 trades)
-    #   ratio <  2x: only 63.6% loss rate — balanced straddles, guard stays silent
+    # Big-leg explosion guard — set to 0 to disable.
+    big_leg_explosion_pct: 0
+    # Minimum asymmetry ratio (unused when big_leg_explosion_pct is 0)
     big_leg_min_ratio: 2
     # Pre-entry skip filter: if mark-price ratio >= this value at 17:00 IST,
     # skip the trade entirely. Backtest finding:
