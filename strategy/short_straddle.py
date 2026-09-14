@@ -397,6 +397,14 @@ class ShortStraddleStrategy:
                     f"near-zero or negative avg PnL. Skipping to preserve capital.",
                     color=15105570,  # Orange
                 )
+                self._send_hypothetical_pnl_after_settlement(
+                    call_symbol=self.call_symbol,
+                    put_symbol=self.put_symbol,
+                    call_entry=self.call_entry_premium,
+                    put_entry=self.put_entry_premium,
+                    atm_strike=self.atm_strike,
+                    entry_ratio=_entry_ratio,
+                )
                 return  # is_position_open stays False → run() aborts cleanly
             else:
                 logger.info(
@@ -939,6 +947,154 @@ class ShortStraddleStrategy:
             logger.warning(f"Big-leg explosion check error: {e} — skipping check")
 
         return False
+
+
+    def _send_hypothetical_pnl_after_settlement(
+        self,
+        call_symbol: str,
+        put_symbol: str,
+        call_entry: float,
+        put_entry: float,
+        atm_strike: float,
+        entry_ratio: float,
+    ) -> None:
+        """Wait until exit time, then compute & post hypothetical PnL to Discord.
+
+        Called when the ratio filter skips the trade.  Sleeps until the
+        configured exit_time (e.g. 17:30 IST), then fetches the BTC settlement
+        spot price and current option marks to calculate what the PnL *would*
+        have been, and sends a follow-up Discord message.
+        """
+        exit_time_str = self.strategy_config.exit_time
+        now = datetime.now(IST)
+        exit_h, exit_m = map(int, exit_time_str.split(":"))
+        exit_dt = now.replace(hour=exit_h, minute=exit_m, second=5, microsecond=0)
+
+        remaining = (exit_dt - now).total_seconds()
+        if remaining > 0:
+            logger.info(
+                f"Hypothetical PnL: waiting {remaining:.0f}s until {exit_time_str} IST for settlement"
+            )
+            time.sleep(remaining)
+
+        logger.info("Hypothetical PnL: computing settlement result for skipped trade")
+
+        try:
+            # ── Fetch settlement prices ───────────────────────────────────────
+            btc_ticker = self.client.get_ticker(f"{self.underlying}USD")
+            settle_spot = float(btc_ticker.get("mark_price") or btc_ticker.get("close") or 0)
+
+            call_exit: float | None = None
+            put_exit: float | None = None
+
+            try:
+                call_data = self.client.get_ticker(call_symbol)
+                if call_data:
+                    call_exit = float(call_data.get("mark_price") or 0)
+            except Exception:
+                pass
+
+            try:
+                put_data = self.client.get_ticker(put_symbol)
+                if put_data:
+                    put_exit = float(put_data.get("mark_price") or 0)
+            except Exception:
+                pass
+
+            # Fall back to intrinsic value if live marks are unavailable
+            # (options expire/delist right at 17:30 so marks may be gone)
+            if not call_exit and not put_exit:
+                if settle_spot >= atm_strike:
+                    call_exit = settle_spot - atm_strike
+                    put_exit  = 0.0
+                else:
+                    call_exit = 0.0
+                    put_exit  = atm_strike - settle_spot
+                price_source = "intrinsic (options expired)"
+            else:
+                call_exit = call_exit or 0.0
+                put_exit  = put_exit  or 0.0
+                price_source = "live mark price"
+
+            entry_total = call_entry + put_entry
+            exit_total  = call_exit  + put_exit
+            pnl_points  = entry_total - exit_total
+
+            # Lot size: re-derive dynamically from current balance (same formula as entry)
+            lot_size = 1
+            try:
+                balance = self.client.get_available_balance()
+                if balance > 0 and settle_spot > 0:
+                    margin_per_lot = 2 * self._calculate_margin_per_leg(settle_spot)
+                    capital = balance * self.capital_allocation_pct
+                    lot_size = int(capital / margin_per_lot) if margin_per_lot > 0 else 1
+                    lot_size = max(1, min(lot_size, self.max_lot_size or 1000))
+            except Exception as e:
+                logger.warning(f"Hypothetical PnL: balance fetch failed — using lot_size=1: {e}")
+
+            multiplier   = lot_size * self.contract_value
+            call_pnl_usd = (call_entry - call_exit) * multiplier
+            put_pnl_usd  = (put_entry  - put_exit)  * multiplier
+            total_pnl    = pnl_points * multiplier
+
+            # ── Direction context ─────────────────────────────────────────────
+            if settle_spot > atm_strike:
+                direction_note = (
+                    f"BTC settled **${settle_spot:,.2f}** — "
+                    f"**${settle_spot - atm_strike:,.0f} ABOVE** strike → CALL was ITM"
+                )
+            elif settle_spot < atm_strike:
+                direction_note = (
+                    f"BTC settled **${settle_spot:,.2f}** — "
+                    f"**${atm_strike - settle_spot:,.0f} BELOW** strike → PUT was ITM"
+                )
+            else:
+                direction_note = (
+                    f"BTC settled **${settle_spot:,.2f}** — exactly AT strike → max profit"
+                )
+
+            outcome_icon = "✅" if total_pnl >= 0 else "❌"
+            outcome_word = "PROFIT" if total_pnl >= 0 else "LOSS"
+            filter_verdict = (
+                "Filter **cost** capital — trade would have been profitable."
+                if total_pnl >= 0
+                else "Filter **saved** capital — trade would have lost."
+            )
+
+            # ── Build Discord message ─────────────────────────────────────────
+            msg = (
+                f"**What would have happened if we entered?**\n\n"
+                f"**Entry premiums** (at 17:00 IST)\n"
+                f"CALL `{call_symbol}`: **${call_entry:.4f}**\n"
+                f"PUT  `{put_symbol}`: **${put_entry:.4f}**\n"
+                f"Total entry: **${entry_total:.4f}** pts\n"
+                f"Ratio: **{entry_ratio:.1f}x**\n\n"
+                f"**Settlement** ({exit_time_str} IST) — *{price_source}*\n"
+                f"CALL exit: **${call_exit:.4f}**\n"
+                f"PUT  exit: **${put_exit:.4f}**\n"
+                f"Total exit: **${exit_total:.4f}** pts\n\n"
+                f"{direction_note}\n\n"
+                f"**PnL breakdown** ({lot_size} lots × {self.contract_value} BTC)\n"
+                f"PnL (points): **{pnl_points:+.4f} pts**\n"
+                f"Call PnL: **${call_pnl_usd:+.2f}**\n"
+                f"Put  PnL: **${put_pnl_usd:+.2f}**\n"
+                f"**Net PnL: ${total_pnl:+.2f} USD**\n\n"
+                f"{outcome_icon} **{outcome_word}** — {filter_verdict}"
+            )
+
+            color = 3066993 if total_pnl >= 0 else 15158332  # green : red
+            self.notifier.send_status_message(
+                f"📊 Hypothetical PnL — Skipped Trade ({self.underlying})",
+                msg,
+                color=color,
+            )
+            logger.info(
+                f"Hypothetical PnL posted: {pnl_points:+.4f} pts | "
+                f"${total_pnl:+.2f} USD | lots={lot_size}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Hypothetical PnL calculation failed: {e}")
 
 
     def _wait_until_exit_time(self) -> None:
