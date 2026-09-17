@@ -111,6 +111,102 @@ class ShortStraddleStrategy:
             return (spot_price * self.contract_value) / self.leverage
         return spot_price * self.contract_value * self.option_margin_requirement_pct
 
+    def _wait_for_momentum_trigger(self) -> bool:
+        """Block from entry_time until BTC moves >= threshold_pct from the session baseline.
+
+        Snapshots BTC spot price once at the start (session open baseline), then polls
+        every monitor_interval_sec seconds until:
+          - |current_spot - baseline| / baseline * 100 >= threshold_pct  →  return True
+          - exit_time (17:30 IST) is reached without a trigger             →  return False
+
+        Called only when momentum_filter.reverse=True AND lookback_hours==0.
+        This is the entry gate for the btc_momentum_straddle strategy.
+
+        Returns:
+            True  — momentum threshold breached, proceed to _execute_entry()
+            False — exit_time elapsed without a trigger, no trade today
+        """
+        mf = self.strategy_config.momentum_filter
+        threshold_pct = mf.threshold_pct
+        exit_time_str = self.strategy_config.exit_time
+        poll_interval = self.monitor_interval   # 30s configured
+
+        # ── Snapshot session baseline ─────────────────────────────────────────
+        try:
+            baseline_price = self.client.get_spot_price(self.underlying)
+        except Exception as e:
+            logger.error(f"Momentum trigger: failed to get baseline spot price: {e} — aborting.")
+            return False
+
+        now = datetime.now(IST)
+        exit_h, exit_m = map(int, exit_time_str.split(":"))
+        exit_time = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
+
+        logger.info(
+            f"⏳ Momentum trigger active — "
+            f"baseline {self.underlying}: ${baseline_price:,.2f} | "
+            f"threshold: {threshold_pct}% | "
+            f"polling every {poll_interval}s until {exit_time_str} IST"
+        )
+        self.notifier.send_status_message(
+            f"⏳ Momentum Watch Started — {self.underlying}",
+            f"Waiting for **{self.underlying}** to move **≥{threshold_pct}%** "
+            f"from session baseline **${baseline_price:,.2f}**\n"
+            f"Window: **{now.strftime('%H:%M')} → {exit_time_str} IST**\n"
+            f"Poll interval: {poll_interval}s",
+            color=3447003,  # Blue
+        )
+
+        while True:
+            time.sleep(poll_interval)
+            now = datetime.now(IST)
+
+            if now >= exit_time:
+                logger.info(
+                    f"⏰ Exit time {exit_time_str} IST reached without momentum trigger — "
+                    f"no trade today (baseline was ${baseline_price:,.2f}, threshold {threshold_pct}%)."
+                )
+                self.notifier.send_status_message(
+                    f"⏰ No Trigger — {self.underlying}",
+                    f"**{self.underlying}** did not move ≥{threshold_pct}% from "
+                    f"baseline **${baseline_price:,.2f}** in the "
+                    f"window. No trade taken today.",
+                    color=10070709,  # Grey
+                )
+                return False
+
+            try:
+                current_price = self.client.get_spot_price(self.underlying)
+                move_pct = abs(current_price - baseline_price) / baseline_price * 100
+                direction = "▲ UP" if current_price > baseline_price else "▼ DOWN"
+
+                logger.info(
+                    f"Momentum check: {self.underlying} ${current_price:,.2f} | "
+                    f"move: {move_pct:.3f}% {direction} | threshold: {threshold_pct}%"
+                )
+
+                if move_pct >= threshold_pct:
+                    logger.info(
+                        f"🔥 Momentum trigger FIRED — "
+                        f"{self.underlying} moved {move_pct:.3f}% {direction} "
+                        f"(baseline: ${baseline_price:,.2f} → current: ${current_price:,.2f})"
+                    )
+                    self.notifier.send_status_message(
+                        f"🔥 Momentum Triggered — {self.underlying}",
+                        f"**{self.underlying}** moved **{move_pct:.2f}% {direction}** "
+                        f"from session baseline **${baseline_price:,.2f}**\n"
+                        f"Current: **${current_price:,.2f}**\n"
+                        f"Threshold: {threshold_pct}%\n\n"
+                        f"Entering ATM short straddle now...",
+                        color=5763719,  # Green
+                    )
+                    return True
+
+            except Exception as e:
+                logger.warning(
+                    f"Momentum trigger poll error: {e} — retrying in {poll_interval}s"
+                )
+
     def _check_momentum_filter(self) -> bool:
         """Check pre-entry momentum filter.
 
@@ -280,10 +376,19 @@ class ShortStraddleStrategy:
                     color=3447003, # Blue
                 )
             else:
-                # Step 0: Pre-entry momentum filter
-                if self._check_momentum_filter():
-                    logger.info("Trade skipped by momentum filter — ending strategy cycle.")
-                    return
+                # Step 0: Pre-entry dispatch
+                mf = self.strategy_config.momentum_filter
+                if mf and mf.enabled and mf.reverse and mf.lookback_hours == 0:
+                    # NEW: Blocking trigger loop — wait for momentum threshold, then enter
+                    triggered = self._wait_for_momentum_trigger()
+                    if not triggered:
+                        logger.info("Momentum trigger window expired — no trade today. Ending strategy cycle.")
+                        return
+                else:
+                    # EXISTING: One-shot pre-entry check — skip if too much momentum
+                    if self._check_momentum_filter():
+                        logger.info("Trade skipped by momentum filter — ending strategy cycle.")
+                        return
 
                 # Step 1: Entry
                 self._execute_entry()
@@ -292,10 +397,16 @@ class ShortStraddleStrategy:
                 logger.warning("Entry failed — no positions opened. Aborting strategy cycle.")
                 return
 
-            if self.sl_pct is not None:
-                # Step 2: Monitor for SL
+            # Step 2: Monitor for SL / wait for exit time
+            sl_cfg = self.strategy_config.stop_loss
+            if sl_cfg and getattr(sl_cfg, 'per_leg', False):
+                # NEW: Per-leg independent SL monitor (btc_momentum_straddle)
+                sl_hit = self._monitor_per_leg_stop_loss()
+                if not sl_hit:
+                    self._execute_exit(reason="scheduled_exit")
+            elif self.sl_pct is not None:
+                # EXISTING: Combined SL monitor
                 sl_hit = self._monitor_stop_loss()
-
                 # Step 3: Exit (if SL was not hit, positions are still open)
                 if not sl_hit:
                     self._execute_exit(reason="scheduled_exit")
@@ -1096,6 +1207,107 @@ class ShortStraddleStrategy:
         except Exception as e:
             logger.warning(f"Hypothetical PnL calculation failed: {e}")
 
+
+    def _monitor_per_leg_stop_loss(self) -> bool:
+        """Per-leg independent SL monitor for the btc_momentum_straddle strategy.
+
+        Checks each leg independently against its own entry premium:
+          - CE SL fires when current_call_mark >= call_entry_premium * (1 + sl_pct)
+          - PE SL fires when current_put_mark  >= put_entry_premium  * (1 + sl_pct)
+
+        When EITHER leg hits its SL threshold, BOTH legs are closed immediately.
+
+        This is intentionally separate from _monitor_stop_loss() (which uses a
+        combined premium threshold) to avoid any risk of regression on the
+        existing btc_short_straddle strategy.
+
+        Returns:
+            True  — SL hit on at least one leg; both positions closed
+            False — exit_time reached without any SL hit
+        """
+        logger.info("=" * 60)
+        logger.info("STEP 2: MONITORING — Per-leg stop-loss active (100% per leg)")
+        logger.info("=" * 60)
+
+        if not self.is_position_open:
+            return False
+
+        exit_time_str = self.strategy_config.exit_time
+        now = datetime.now(IST)
+        exit_h, exit_m = map(int, exit_time_str.split(":"))
+        exit_time = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
+
+        # Per-leg SL threshold: entry_mark * (1 + sl_pct)  e.g. 100% → mark must double
+        call_sl_threshold = self.call_entry_premium * (1.0 + self.sl_pct)
+        put_sl_threshold  = self.put_entry_premium  * (1.0 + self.sl_pct)
+
+        logger.info(
+            f"Per-leg SL thresholds — "
+            f"CE: ${self.call_entry_premium:.4f} × {1.0 + self.sl_pct:.1f} "
+            f"= ${call_sl_threshold:.4f} | "
+            f"PE: ${self.put_entry_premium:.4f} × {1.0 + self.sl_pct:.1f} "
+            f"= ${put_sl_threshold:.4f} | "
+            f"monitoring until {exit_time_str} IST"
+        )
+
+        while True:
+            now = datetime.now(IST)
+            if now >= exit_time:
+                logger.info("Exit time reached — per-leg SL was not hit")
+                return False
+
+            try:
+                current_call = self._get_current_premium(self.call_product_id, self.call_symbol)
+                current_put  = self._get_current_premium(self.put_product_id, self.put_symbol)
+
+                call_loss_pct = (
+                    (current_call - self.call_entry_premium) / self.call_entry_premium * 100
+                    if self.call_entry_premium > 0 else 0.0
+                )
+                put_loss_pct = (
+                    (current_put - self.put_entry_premium) / self.put_entry_premium * 100
+                    if self.put_entry_premium > 0 else 0.0
+                )
+
+                logger.debug(
+                    f"Per-leg MTM — "
+                    f"CE: ${current_call:.4f} ({call_loss_pct:+.1f}% | SL@${call_sl_threshold:.4f}) | "
+                    f"PE: ${current_put:.4f} ({put_loss_pct:+.1f}% | SL@${put_sl_threshold:.4f})"
+                )
+
+                sl_hit_leg: Optional[str] = None
+                if current_call >= call_sl_threshold:
+                    sl_hit_leg = "CE"
+                elif current_put >= put_sl_threshold:
+                    sl_hit_leg = "PE"
+
+                if sl_hit_leg:
+                    trigger_loss_pct = call_loss_pct if sl_hit_leg == "CE" else put_loss_pct
+                    logger.warning(
+                        f"⚠️ PER-LEG SL HIT on {sl_hit_leg}! "
+                        f"CE: ${current_call:.4f} ({call_loss_pct:+.1f}%) | "
+                        f"PE: ${current_put:.4f} ({put_loss_pct:+.1f}%) — closing BOTH legs."
+                    )
+                    mtm_loss = (current_call + current_put) - self.entry_premium
+                    # Use sl_threshold (combined) for the SL alert if available,
+                    # else approximate as entry_premium (100% combined reference)
+                    sl_ref = self.sl_threshold if self.sl_threshold not in (None, float('inf')) \
+                             else self.entry_premium
+                    self.notifier.send_sl_alert(
+                        underlying=self.underlying,
+                        current_loss=mtm_loss,
+                        sl_threshold=sl_ref,
+                        entry_premium=self.entry_premium,
+                        loss_pct=trigger_loss_pct,
+                        mode=self.mode,
+                    )
+                    self._execute_exit(reason="stop_loss_hit")
+                    return True
+
+            except Exception as e:
+                logger.warning(f"Per-leg SL monitor poll error: {e} — continuing")
+
+            time.sleep(self.monitor_interval)
 
     def _wait_until_exit_time(self) -> None:
         """Poll every 30s until exit time, checking for big-leg explosion.

@@ -33,6 +33,30 @@ straddle_strategies:
     monitor_interval_sec: 60     # Poll interval when SL is active (unused when stop_loss: null)
 
 
+  - name: "btc_momentum_straddle"
+    underlying: "BTC"                # BTC options
+    entry_time: "16:00"              # IST — start watching for momentum trigger (4:00 PM IST)
+    exit_time: "17:30"               # IST — let options expire at settlement (5:30 PM IST)
+    timezone: "Asia/Kolkata"         # IST
+    capital_allocation_pct: 40       # 40% of available wallet balance to deploy per trade
+    lot_size: null                   # Dynamic lot sizing
+    max_lot_size: 1000               # Hard cap per leg
+    leverage: 200                    # 200x leverage
+    order_type: "market_order"       # Market orders for instant fill
+    skip_weekends: false
+    stop_loss: null                   # No SL — let options run to 17:30 IST expiry
+    # Momentum trigger: enter ONLY when BTC moves >= 1.0% from session baseline (snapshotted at 16:00 IST)
+    # lookback_hours: 0 means use spot at entry time as baseline (not a historical candle)
+    momentum_filter:
+      enabled: true
+      reverse: true                  # Enter ONLY when |move| >= threshold (reverse/trigger mode)
+      lookback_hours: 0              # 0 = snapshot spot at 16:00 IST as the fixed baseline
+      threshold_pct: 1.0             # Enter when |BTC move| >= 1.0% from baseline
+    monitor_interval_sec: 30         # Poll every 30s while waiting for trigger + SL monitoring
+    big_leg_explosion_pct: 0         # Disabled
+    big_leg_min_ratio: 2
+    big_leg_skip_ratio: 0            # No ratio filter — momentum condition is the entry gate
+
   - name: "btc_otm2_revmom_strangle"
     enabled: false              # Temporarily disabled
     underlying: "BTC"           # BTC options

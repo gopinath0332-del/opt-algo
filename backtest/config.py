@@ -128,6 +128,16 @@ class BacktestConfig:
     # 10 = 10th OTM strike ($2,000 away from spot for both call and put)
     otm_steps: int = 0
 
+    # ---- Momentum-trigger engine ------------------------------------------
+    # momentum_threshold_pct: % move from session-open baseline required to fire entry.
+    #   e.g. 0.5 = BTC must move >=0.5% from baseline (ATM at entry_time_utc) before we enter.
+    momentum_threshold_pct: float = 0.5
+
+    # sl_per_leg: when True, each leg has its own independent SL threshold (value × sl_pct).
+    #   If either leg's mark >= entry_mark * (1 + sl_pct/100), BOTH legs are closed.
+    #   When False (default), the combined premium is compared against a single threshold.
+    sl_per_leg: bool = True
+
     # ---- Reporting --------------------------------------------------------
     report_dir: Path = field(default_factory=lambda: REPORTS_DIR)
     verbose: bool = True

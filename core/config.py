@@ -19,6 +19,15 @@ class StopLossConfig(BaseModel):
 
     type: str = Field(default="premium_pct", description="SL type: premium_pct or max_loss_usd")
     value: float = Field(default=50.0, gt=0, description="SL value (50 = 50% of premium)")
+    per_leg: bool = Field(
+        default=False,
+        description=(
+            "If True, SL is evaluated independently for each leg: "
+            "fires when either leg's current mark >= entry_mark * (1 + value/100). "
+            "When triggered, BOTH legs are closed. "
+            "If False (default), the combined premium is compared against a single threshold."
+        ),
+    )
 
 
 class MomentumFilterConfig(BaseModel):
@@ -36,8 +45,12 @@ class MomentumFilterConfig(BaseModel):
         description="If True, enter ONLY when |move| > threshold_pct (reverse momentum filter)",
     )
     lookback_hours: float = Field(
-        default=2.0, gt=0,
-        description="Hours before entry to measure price change",
+        default=2.0, ge=0,
+        description=(
+            "Hours before entry to measure price change. "
+            "0 = snapshot the spot price at the moment run() is called (session open baseline) "
+            "instead of fetching a historical candle."
+        ),
     )
     threshold_pct: float = Field(
         default=1.2, gt=0,
