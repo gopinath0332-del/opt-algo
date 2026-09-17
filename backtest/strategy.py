@@ -846,3 +846,277 @@ class MomentumStraddleEngine:
         log.warning("%s: SKIP (momentum) — %s", trade_date, reason)
         self.skipped.append(SkippedDay(trade_date, reason))
 
+
+# ---------------------------------------------------------------------------
+# Momentum-Triggered Directional Option Buyer Engine
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MomentumBuyerTradeResult(TradeResult):
+    """
+    Trade result for Momentum Option Buying:
+    - Long CE when BTC moves >= +threshold%
+    - Long PE when BTC moves <= -threshold%
+    """
+    direction:         str = ""                        # "UP" | "DOWN"
+    leg_bought:        str = ""                        # "CE" | "PE"
+    strike_bought:     float = 0.0
+    trigger_ts:        Optional[pd.Timestamp] = None
+    trigger_move_pct:  float = 0.0
+    baseline_price:    float = 0.0
+    settlement_spot:   float = 0.0
+
+    def __post_init__(self):
+        # Long Option Gross P&L: (exit_premium - entry_premium) * lot_size * contract_value
+        self.pnl_usd = (self.exit_premium - self.entry_premium) * self.lot_size * self.contract_value
+
+        # Entry taker fee: 0.03% of spot, capped at fee_cap_pct of entry premium
+        if self.fee_rate > 0 and self.spot_estimate:
+            raw_entry_fee = self.lot_size * self.contract_value * self.fee_rate * self.spot_estimate
+            entry_cap = (self.fee_cap_pct / 100.0) * self.entry_premium * self.lot_size * self.contract_value
+            entry_fee = min(raw_entry_fee, entry_cap)
+
+            # Settlement fee for ITM leg on expiry (0.01% of spot, capped at 10% of payout)
+            settle_fee = 0.0
+            if self.exit_premium > 0:
+                raw_settle_fee = self.lot_size * self.contract_value * 0.0001 * (self.settlement_spot or self.spot_estimate)
+                settle_cap = 0.10 * self.exit_premium * self.lot_size * self.contract_value
+                settle_fee = min(raw_settle_fee, settle_cap)
+
+            self.fee_usd = entry_fee + settle_fee
+        else:
+            self.fee_usd = 0.0
+
+        # Slippage: paid on entry (at market order). Expiry settlement has 0 slippage.
+        s = self.slippage_pct / 100.0
+        self.slippage_usd = self.entry_premium * s * self.lot_size * self.contract_value
+
+        self.net_pnl_usd = self.pnl_usd - self.fee_usd - self.slippage_usd
+
+
+class MomentumBuyerEngine:
+    """
+    Momentum-triggered Directional Option Buyer Engine.
+
+    Rules:
+    1. Baseline: Snapshot ATM strike at 16:00 IST (10:30 UTC).
+    2. Scan minute ticks from 10:30 UTC to 12:00 UTC.
+       Calculate spot move % from baseline.
+       - If move >= +threshold%: Trigger UP   -> Buy ATM CE
+       - If move <= -threshold%: Trigger DOWN -> Buy ATM PE
+    3. Strike: ATM strike at trigger time.
+    4. Sizing: Based on capital allocation (cost = entry_premium * contract_value).
+    5. Exit: Hold to 17:30 IST (12:00 UTC) expiry / settlement.
+    """
+
+    def __init__(self, cfg: BacktestConfig):
+        self.cfg      = cfg
+        self.trades:  List[MomentumBuyerTradeResult] = []
+        self.skipped: List[SkippedDay] = []
+        self._equity: float = cfg.initial_capital
+
+    def _compute_lot_size(self, entry_price: float) -> int:
+        """Dynamic lot sizing for option buyer: capital / (entry_price * contract_value)."""
+        if not self.cfg.use_dynamic_lot_size:
+            return self.cfg.lot_size
+        try:
+            capital = self._equity * (self.cfg.capital_allocation_pct / 100.0)
+            cost_per_contract = entry_price * self.cfg.contract_value
+            if cost_per_contract <= 0:
+                return self.cfg.lot_size
+            computed = max(1, int(capital / cost_per_contract))
+            if self.cfg.max_lot_size > 0:
+                computed = min(computed, self.cfg.max_lot_size)
+            return computed
+        except Exception:
+            return self.cfg.lot_size
+
+    def run_day(self, trade_date: date, day_df: pd.DataFrame) -> Optional[MomentumBuyerTradeResult]:
+        cfg = self.cfg
+
+        entry_ts_anchor = pd.Timestamp(datetime.combine(trade_date, cfg.entry_time_utc))
+        exit_ts         = pd.Timestamp(datetime.combine(trade_date, cfg.exit_time_utc))
+
+        # ── Step 1: Baseline — ATM strike at session open (10:30 UTC) ──────
+        baseline_atm = find_atm_strike(
+            day_df, trade_date,
+            cfg.entry_time_utc,
+            cfg.price_window_minutes,
+        )
+        if baseline_atm is None:
+            self._skip(trade_date, "no ATM strike found at session open (baseline)")
+            return None
+        baseline_price = baseline_atm
+
+        # ── Step 2: Scan ticks for directional momentum trigger ─────────────
+        cp_mask = (
+            (
+                ((day_df["opt_type"] == "C") & (day_df["strike"] == baseline_atm)) |
+                ((day_df["opt_type"] == "P") & (day_df["strike"] == baseline_atm))
+            ) &
+            (day_df["ts"] >= entry_ts_anchor) &
+            (day_df["ts"] <= exit_ts)
+        )
+        cp_ticks = day_df[cp_mask].copy()
+
+        trigger_ts       = None
+        trigger_move_pct = 0.0
+        direction        = None
+        leg_bought       = None
+
+        if not cp_ticks.empty:
+            c_ticks = (
+                cp_ticks[cp_ticks["opt_type"] == "C"][["ts", "price"]]
+                .set_index("ts")
+                .resample("1Min").last().ffill()
+                .rename(columns={"price": "call_price"})
+            )
+            p_ticks = (
+                cp_ticks[cp_ticks["opt_type"] == "P"][["ts", "price"]]
+                .set_index("ts")
+                .resample("1Min").last().ffill()
+                .rename(columns={"price": "put_price"})
+            )
+            minute_df = c_ticks.join(p_ticks, how="outer").ffill().dropna()
+
+            # Signed spot proxy and signed move %
+            minute_df["spot_proxy"] = baseline_atm + (minute_df["call_price"] - minute_df["put_price"])
+            minute_df["move_pct"]   = (minute_df["spot_proxy"] - baseline_price) / baseline_price * 100
+
+            # Find first trigger (skip row 0 = baseline)
+            for ts, row in minute_df.iloc[1:].iterrows():
+                move = row["move_pct"]
+                if move >= cfg.momentum_threshold_pct:
+                    trigger_ts       = ts
+                    trigger_move_pct = float(move)
+                    direction        = "UP"
+                    leg_bought       = "CE"
+                    break
+                elif move <= -cfg.momentum_threshold_pct:
+                    trigger_ts       = ts
+                    trigger_move_pct = float(move)
+                    direction        = "DOWN"
+                    leg_bought       = "PE"
+                    break
+
+        if trigger_ts is None:
+            self._skip(trade_date, f"no momentum trigger (threshold={cfg.momentum_threshold_pct}%)")
+            return None
+
+        # ── Step 3: Find ATM strike at trigger time ─────────────────────────
+        trigger_time = trigger_ts.time()
+        atm_at_trigger = find_atm_strike(
+            day_df, trade_date,
+            trigger_time,
+            cfg.price_window_minutes,
+        )
+        strike_to_buy = atm_at_trigger if atm_at_trigger is not None else baseline_atm
+        opt_type = "C" if leg_bought == "CE" else "P"
+
+        # ── Step 4: Entry price of the chosen option ─────────────────────────
+        from .price_engine import get_price_at_time
+        entry_price = get_price_at_time(
+            day_df, opt_type, strike_to_buy,
+            trade_date, trigger_time,
+            cfg.price_window_minutes,
+        )
+
+        if entry_price is None or entry_price <= 0:
+            # Fallback: check closest tick around trigger
+            mask = (
+                (day_df["opt_type"] == opt_type) &
+                (day_df["strike"]   == strike_to_buy) &
+                (day_df["ts"]       <= trigger_ts + pd.Timedelta(minutes=cfg.price_window_minutes)) &
+                (day_df["ts"]       >= trigger_ts - pd.Timedelta(minutes=cfg.price_window_minutes))
+            )
+            s = day_df[mask]
+            if not s.empty:
+                entry_price = float(s.iloc[-1]["price"])
+            else:
+                self._skip(trade_date, f"missing entry price for {leg_bought} {strike_to_buy} at {trigger_ts}")
+                return None
+
+        # ── Step 5: Lot size ────────────────────────────────────────────────
+        lot_size = self._compute_lot_size(entry_price=entry_price)
+
+        # ── Step 6: Settlement at 17:30 IST (12:00 UTC) expiry ─────────────
+        settlement_spot = find_atm_strike(
+            day_df, trade_date,
+            cfg.exit_time_utc,
+            cfg.price_window_minutes,
+        )
+        if settlement_spot is None:
+            # Fallback to last known spot proxy
+            settlement_spot = baseline_price * (1.0 + trigger_move_pct / 100.0)
+
+        # Theoretical intrinsic settlement payout
+        if leg_bought == "CE":
+            intrinsic = max(0.0, settlement_spot - strike_to_buy)
+        else:
+            intrinsic = max(0.0, strike_to_buy - settlement_spot)
+
+        # Market price near exit time (if available)
+        mkt_exit = get_price_at_time(
+            day_df, opt_type, strike_to_buy,
+            trade_date, cfg.exit_time_utc,
+            cfg.price_window_minutes,
+        )
+
+        # In case option expired OTM, market trades rarely happen at 12:00 UTC; intrinsic is exact.
+        # If market trade happened very close to expiry, use market exit, otherwise intrinsic.
+        exit_price = mkt_exit if mkt_exit is not None else intrinsic
+
+        # ── Step 7: Build result ────────────────────────────────────────────
+        entry_c = entry_price if leg_bought == "CE" else 0.0
+        entry_p = entry_price if leg_bought == "PE" else 0.0
+        exit_c  = exit_price  if leg_bought == "CE" else 0.0
+        exit_p  = exit_price  if leg_bought == "PE" else 0.0
+
+        result = MomentumBuyerTradeResult(
+            trade_date       = trade_date,
+            atm_strike       = strike_to_buy,
+            entry_ts         = trigger_ts,
+            entry_call       = entry_c,
+            entry_put        = entry_p,
+            entry_premium    = entry_price,
+            exit_ts          = exit_ts,
+            exit_call        = exit_c,
+            exit_put         = exit_p,
+            exit_premium     = exit_price,
+            exit_reason      = "expiry_settlement",
+            lot_size         = lot_size,
+            sl_threshold     = 0.0,
+            spot_estimate    = strike_to_buy,
+            fee_rate         = cfg.fee_rate,
+            slippage_pct     = cfg.slippage_pct,
+            contract_value   = cfg.contract_value,
+            fee_cap_pct      = cfg.fee_cap_pct,
+            direction        = direction,
+            leg_bought       = leg_bought,
+            strike_bought    = strike_to_buy,
+            trigger_ts       = trigger_ts,
+            trigger_move_pct = trigger_move_pct,
+            baseline_price   = baseline_price,
+            settlement_spot  = settlement_spot,
+        )
+
+        log.info(
+            "%s | Trigger %s (%s) @ %s (move %+.2f%%) | Strike %g | "
+            "Entry $%.2f -> Exit $%.2f | P&L $%.2f (Net $%.2f) | lots=%d",
+            trade_date, direction, leg_bought,
+            trigger_ts.strftime("%H:%M") if trigger_ts else "N/A",
+            trigger_move_pct, strike_to_buy,
+            entry_price, exit_price,
+            result.pnl_usd, result.net_pnl_usd,
+            lot_size,
+        )
+
+        self.trades.append(result)
+        self._equity += result.net_pnl_usd
+        return result
+
+    def _skip(self, trade_date: date, reason: str) -> None:
+        log.warning("%s: SKIP (buyer) — %s", trade_date, reason)
+        self.skipped.append(SkippedDay(trade_date, reason))
+
+
