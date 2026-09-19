@@ -46,12 +46,13 @@ def _parse_time_utc(time_str: str, tz_name: str) -> time:
         return time((total_minutes // 60) % 24, total_minutes % 60)
 
 _settings = _load_live_settings()
-_strat = _settings.get("strategy", {})
+_straddles = _settings.get("straddle_strategies", [])
+_strat = next((s for s in _straddles if s.get("name") == "btc_short_straddle"), {}) or _settings.get("strategy", {})
 
 LIVE_ENTRY_TIME         = _parse_time_utc(_strat.get("entry_time", "17:00"), _strat.get("timezone", "Asia/Kolkata"))
-LIVE_EXIT_TIME          = _parse_time_utc(_strat.get("exit_time",  "17:25"), _strat.get("timezone", "Asia/Kolkata"))
+LIVE_EXIT_TIME          = _parse_time_utc(_strat.get("exit_time",  "17:30"), _strat.get("timezone", "Asia/Kolkata"))
 LIVE_LOT_SIZE           = _strat.get("lot_size", None)          # None = dynamic in live bot
-LIVE_CAPITAL_ALLOC_PCT  = float(_strat.get("capital_allocation_pct", 60))
+LIVE_CAPITAL_ALLOC_PCT  = float(_strat.get("capital_allocation_pct", 40))
 LIVE_LEVERAGE           = float(_strat.get("leverage", 200))
 LIVE_OPTION_MARGIN_PCT  = float(_strat.get("option_margin_requirement_pct", 10.0))
 _sl_conf = _strat.get("stop_loss")

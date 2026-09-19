@@ -52,13 +52,24 @@ def load_month_raw(month: str, data_dir: Path = DATA_DIR) -> pd.DataFrame:
     """
     path = data_dir / f"BTC_{month}.csv"
     if not path.exists():
+        path = data_dir / f"BTC-{month}.csv"
+    if not path.exists():
         log.warning("File not found: %s — skipping month %s", path, month)
         return pd.DataFrame()
 
     log.info("Loading %s (%.0f MB) …", path.name, path.stat().st_size / 1e6)
 
+    compression = None
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) == b"PK":
+                compression = "zip"
+    except Exception:
+        pass
+
     df = pd.read_csv(
         path,
+        compression=compression,
         dtype={
             "product_symbol": "string",
             "price":          "float32",
