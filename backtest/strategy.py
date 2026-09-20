@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional, List
 
 import pandas as pd
@@ -161,6 +161,62 @@ class ShortStraddleEngine:
         except Exception:
             return self.cfg.lot_size
 
+    def _check_momentum_filter(
+        self, day_df: pd.DataFrame, trade_date: date,
+    ) -> bool:
+        """Check pre-entry momentum filter (mirrors live bot logic).
+
+        Estimates BTC spot at (entry_time - lookback_hours) and at entry_time
+        using ATM strike via put-call parity, then checks if the absolute
+        percentage move exceeds the threshold.
+
+        Returns True if the trade should be SKIPPED.
+        """
+        cfg = self.cfg
+        if not cfg.momentum_filter_enabled:
+            return False
+
+        entry_dt = datetime.combine(trade_date, cfg.entry_time_utc)
+        lookback_dt = entry_dt - timedelta(hours=cfg.momentum_lookback_hours)
+
+        # Can't check cross-day lookback within a single day's DataFrame
+        if lookback_dt.date() != trade_date:
+            return False
+
+        lookback_time = lookback_dt.time()
+
+        # Estimate spot at both times using ATM strike (put-call parity)
+        spot_lookback = find_atm_strike(
+            day_df, trade_date, lookback_time, window_minutes=10,
+        )
+        spot_entry = find_atm_strike(
+            day_df, trade_date, cfg.entry_time_utc, cfg.price_window_minutes,
+        )
+
+        if spot_lookback is None or spot_entry is None or spot_lookback == 0:
+            return False  # can't compute — don't skip
+
+        move_pct = abs(spot_entry - spot_lookback) / spot_lookback * 100.0
+
+        if cfg.momentum_filter_reverse:
+            # Reverse mode: enter ONLY when move > threshold
+            skip = move_pct <= cfg.momentum_threshold_pct
+        else:
+            # Normal mode: skip when move > threshold
+            skip = move_pct > cfg.momentum_threshold_pct
+
+        if skip:
+            direction = "UP" if spot_entry > spot_lookback else "DOWN"
+            mode = "reverse" if cfg.momentum_filter_reverse else "normal"
+            log.debug(
+                "%s: momentum filter (%s) — BTC moved %.2f%% %s in %.0fh "
+                "(threshold=%.1f%%) — SKIP",
+                trade_date, mode, move_pct, direction,
+                cfg.momentum_lookback_hours, cfg.momentum_threshold_pct,
+            )
+
+        return skip
+
     def run_day(self, trade_date: date, day_df: pd.DataFrame) -> Optional[TradeResult]:
         """Execute strategy for one day. Returns TradeResult or None if skipped."""
         cfg = self.cfg
@@ -192,6 +248,35 @@ class ShortStraddleEngine:
         if entry_premium <= 0:
             self._skip(trade_date, "zero entry premium")
             return None
+
+        # ---- Pre-entry filters (mirroring live bot) -----------------------
+
+        # Momentum filter
+        if self._check_momentum_filter(day_df, trade_date):
+            self._skip(trade_date, "momentum filter")
+            return None
+
+        # Big-leg skip ratio
+        if cfg.big_leg_skip_ratio > 0 and entry_premium > 0:
+            big_mark  = max(entry_call, entry_put)
+            small_mark = min(entry_call, entry_put)
+            ratio = big_mark / small_mark if small_mark > 0 else float('inf')
+            if ratio >= cfg.big_leg_skip_ratio:
+                self._skip(
+                    trade_date,
+                    f"big-leg ratio {ratio:.1f}x >= {cfg.big_leg_skip_ratio:.0f}x",
+                )
+                return None
+
+        # Minimum entry premium
+        if cfg.min_entry_premium > 0 and entry_premium < cfg.min_entry_premium:
+            self._skip(
+                trade_date,
+                f"low premium ${entry_premium:.1f} < ${cfg.min_entry_premium:.0f} min",
+            )
+            return None
+
+        # ---- End pre-entry filters ----------------------------------------
 
         # SL fires when combined exit premium ≥ entry_premium × (1 + sl_pct/100)
         sl_threshold = entry_premium * (1.0 + cfg.sl_pct / 100.0)
@@ -398,6 +483,52 @@ class ShortStrangleEngine:
         if entry_premium <= 0:
             self._skip(trade_date, "zero entry premium")
             return None
+
+        # ---- Pre-entry filters (mirroring live bot) -----------------------
+
+        # Momentum filter (reuse ShortStraddleEngine helper via composition)
+        if cfg.momentum_filter_enabled:
+            entry_dt = datetime.combine(trade_date, cfg.entry_time_utc)
+            lookback_dt = entry_dt - timedelta(hours=cfg.momentum_lookback_hours)
+            if lookback_dt.date() == trade_date:
+                lookback_time = lookback_dt.time()
+                spot_lookback = find_atm_strike(
+                    day_df, trade_date, lookback_time, window_minutes=10,
+                )
+                spot_entry = find_atm_strike(
+                    day_df, trade_date, cfg.entry_time_utc, cfg.price_window_minutes,
+                )
+                if spot_lookback and spot_entry and spot_lookback > 0:
+                    move_pct = abs(spot_entry - spot_lookback) / spot_lookback * 100.0
+                    if cfg.momentum_filter_reverse:
+                        skip = move_pct <= cfg.momentum_threshold_pct
+                    else:
+                        skip = move_pct > cfg.momentum_threshold_pct
+                    if skip:
+                        self._skip(trade_date, "momentum filter")
+                        return None
+
+        # Big-leg skip ratio
+        if cfg.big_leg_skip_ratio > 0 and entry_premium > 0:
+            big_mark  = max(entry_call, entry_put)
+            small_mark = min(entry_call, entry_put)
+            ratio = big_mark / small_mark if small_mark > 0 else float('inf')
+            if ratio >= cfg.big_leg_skip_ratio:
+                self._skip(
+                    trade_date,
+                    f"big-leg ratio {ratio:.1f}x >= {cfg.big_leg_skip_ratio:.0f}x (strangle)",
+                )
+                return None
+
+        # Minimum entry premium
+        if cfg.min_entry_premium > 0 and entry_premium < cfg.min_entry_premium:
+            self._skip(
+                trade_date,
+                f"low premium ${entry_premium:.1f} < ${cfg.min_entry_premium:.0f} min (strangle)",
+            )
+            return None
+
+        # ---- End pre-entry filters ----------------------------------------
 
         sl_threshold = entry_premium * (1.0 + cfg.sl_pct / 100.0)
 

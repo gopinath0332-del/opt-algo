@@ -92,6 +92,14 @@ class StrategyConfig(BaseModel):
             "(10-15x: -$6.94, 15-20x: +$3.04, 20-50x: +$3.71 avg PnL)."
         ),
     )
+    min_entry_premium: float = Field(
+        default=0.0, ge=0.0,
+        description=(
+            "Pre-entry filter: skip trade entirely if combined entry premium "
+            "(call_mark + put_mark) is less than this dollar value in USD. "
+            "0.0 = disabled. Recommended: 50.0 - 60.0."
+        ),
+    )
 
 
 class NotificationsConfig(BaseModel):

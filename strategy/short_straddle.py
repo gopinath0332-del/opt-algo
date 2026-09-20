@@ -101,6 +101,7 @@ class ShortStraddleStrategy:
         )
         self.big_leg_min_ratio: float = self.strategy_config.big_leg_min_ratio
         self.big_leg_skip_ratio: float = self.strategy_config.big_leg_skip_ratio
+        self.min_entry_premium: float = float(getattr(self.strategy_config, "min_entry_premium", 0.0) or 0.0)
         # Tracks whether the explosion guard already closed the position inside
         # _wait_until_exit_time() so run() doesn't call _execute_exit again.
         self._explosion_exit_handled: bool = False
@@ -409,6 +410,33 @@ class ShortStraddleStrategy:
             else:
                 logger.info(
                     f"Pre-entry ratio filter: {_entry_ratio:.1f}x < {self.big_leg_skip_ratio:.0f}x — OK to enter"
+                )
+
+        # ---------------------------------------------------------------
+        # Pre-entry minimum premium filter:
+        # Skip the trade if the combined ATM premium is too low.
+        # Backtest finding: entries < $50 have negative expected value (-$7.04 avg).
+        # ---------------------------------------------------------------
+        if self.min_entry_premium > 0:
+            if self.entry_premium < self.min_entry_premium:
+                logger.warning(
+                    f"⛔ Pre-entry min premium filter TRIGGERED — "
+                    f"Combined premium ${self.entry_premium:.2f} < ${self.min_entry_premium:.2f} min threshold. "
+                    f"Skipping trade entry. (Backtest: low premium entries have negative expectancy)"
+                )
+                self.notifier.send_status_message(
+                    f"⛔ Low Premium Filter — Trade Skipped ({self.underlying})",
+                    f"Strike: **{self.atm_strike}**\n"
+                    f"Combined Premium: **${self.entry_premium:.2f}** (Threshold: ${self.min_entry_premium:.2f})\n"
+                    f"Call Mark: **${self.call_entry_premium:.2f}** | Put Mark: **${self.put_entry_premium:.2f}**\n\n"
+                    f"Backtest finding: entries below ${self.min_entry_premium:.0f} have negative expected value. "
+                    f"Skipping to preserve capital.",
+                    color=15105570,  # Orange
+                )
+                return  # is_position_open stays False → run() aborts cleanly
+            else:
+                logger.info(
+                    f"Pre-entry min premium filter: ${self.entry_premium:.2f} >= ${self.min_entry_premium:.2f} — OK to enter"
                 )
 
         # ---------------------------------------------------------------

@@ -26,6 +26,9 @@ straddle_strategies:
     #   ratio  2-10x: avg PnL = +$26+   (positive — enter with guard active)
     # Set to 0 to disable.
     big_leg_skip_ratio: 10
+    # Minimum combined entry premium ($). Skips trade if combined ATM premium < this value.
+    # Backtest: entries < $50 have negative expected value. Set to 0 to disable.
+    min_entry_premium: 60
     momentum_filter:
       enabled: true              # Skip entry if BTC exhibits strong pre-entry momentum
       lookback_hours: 2          # Check price change over the 2 hours before entry

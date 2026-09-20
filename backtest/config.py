@@ -61,6 +61,25 @@ if isinstance(_sl_conf, dict):
 else:
     LIVE_SL_PCT = 9999.0
 
+# Momentum filter settings
+_mf_conf = _strat.get("momentum_filter", {})
+if isinstance(_mf_conf, dict):
+    LIVE_MOMENTUM_FILTER_ENABLED   = bool(_mf_conf.get("enabled", False))
+    LIVE_MOMENTUM_FILTER_REVERSE   = bool(_mf_conf.get("reverse", False))
+    LIVE_MOMENTUM_LOOKBACK_HOURS   = float(_mf_conf.get("lookback_hours", 2.0))
+    LIVE_MOMENTUM_THRESHOLD_PCT    = float(_mf_conf.get("threshold_pct", 1.2))
+else:
+    LIVE_MOMENTUM_FILTER_ENABLED   = False
+    LIVE_MOMENTUM_FILTER_REVERSE   = False
+    LIVE_MOMENTUM_LOOKBACK_HOURS   = 2.0
+    LIVE_MOMENTUM_THRESHOLD_PCT    = 1.2
+
+# Big-leg skip ratio
+LIVE_BIG_LEG_SKIP_RATIO = float(_strat.get("big_leg_skip_ratio", 0.0))
+
+# Minimum combined entry premium ($)
+LIVE_MIN_ENTRY_PREMIUM = float(_strat.get("min_entry_premium", 0.0))
+
 # ---------------------------------------------------------------------------
 # BacktestConfig
 # ---------------------------------------------------------------------------
@@ -128,6 +147,24 @@ class BacktestConfig:
     # 0  = ATM straddle (default, backward compatible)
     # 10 = 10th OTM strike ($2,000 away from spot for both call and put)
     otm_steps: int = 0
+
+    # ---- Pre-entry filters (mirrored from config/settings.yaml) -----------
+    # Momentum filter: skip entry if BTC moved > threshold in the lookback
+    # window before entry time. Estimates spot via ATM strike (put-call parity).
+    # When reverse=True, enter ONLY when |move| > threshold.
+    momentum_filter_enabled:     bool  = field(default_factory=lambda: LIVE_MOMENTUM_FILTER_ENABLED)
+    momentum_filter_reverse:     bool  = field(default_factory=lambda: LIVE_MOMENTUM_FILTER_REVERSE)
+    momentum_lookback_hours:     float = field(default_factory=lambda: LIVE_MOMENTUM_LOOKBACK_HOURS)
+    momentum_threshold_pct:      float = field(default_factory=lambda: LIVE_MOMENTUM_THRESHOLD_PCT)
+
+    # Big-leg skip ratio: skip entry when max(call_mark, put_mark) /
+    # min(call_mark, put_mark) >= this value. 0 = disabled.
+    big_leg_skip_ratio:          float = field(default_factory=lambda: LIVE_BIG_LEG_SKIP_RATIO)
+
+    # Minimum combined entry premium (call + put). Skip if below this
+    # threshold — low-premium entries have negative expected value.
+    # 0 = disabled. Recommended: 50-60.
+    min_entry_premium:           float = field(default_factory=lambda: LIVE_MIN_ENTRY_PREMIUM)
 
     # ---- Reporting --------------------------------------------------------
     report_dir: Path = field(default_factory=lambda: REPORTS_DIR)

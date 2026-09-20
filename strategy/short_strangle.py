@@ -38,6 +38,7 @@ class ShortStrangleStrategy(ShortStraddleStrategy):
         """Initialize Short Strangle strategy."""
         super().__init__(config, client, notifier, strategy_config=strategy_config)
         self.otm_steps = getattr(self.strategy_config, "otm_steps", 2)
+        self.min_entry_premium = float(getattr(self.strategy_config, "min_entry_premium", 0.0) or 0.0)
         self.strategy_display_name = f"Short Strangle OTM+{self.otm_steps}"
         self.strategy_type_name = "short_strangle"
 
@@ -277,6 +278,24 @@ class ShortStrangleStrategy(ShortStraddleStrategy):
         self.call_entry_mark = self.call_entry_premium
         self.put_entry_mark = self.put_entry_premium
         self.entry_slippage_usd = 0.0
+
+        # Pre-entry minimum premium filter
+        if self.min_entry_premium > 0:
+            if self.entry_premium < self.min_entry_premium:
+                logger.warning(
+                    f"⛔ Pre-entry min premium filter TRIGGERED — "
+                    f"Combined strangle premium ${self.entry_premium:.2f} < ${self.min_entry_premium:.2f} min threshold. "
+                    f"Skipping trade entry."
+                )
+                self.notifier.send_status_message(
+                    f"⛔ Low Premium Filter — Trade Skipped ({self.underlying})",
+                    f"OTM Steps: **{self.otm_steps}** | Call Strike: **{self.call_product.get('strike_price')}** | Put Strike: **{self.put_product.get('strike_price')}**\n"
+                    f"Combined Premium: **${self.entry_premium:.2f}** (Threshold: ${self.min_entry_premium:.2f})\n"
+                    f"Call Mark: **${self.call_entry_premium:.2f}** | Put Mark: **${self.put_entry_premium:.2f}**\n\n"
+                    f"Skipping to preserve capital.",
+                    color=15105570,
+                )
+                return
 
         # Dynamic lot sizing based on capital_allocation_pct
         self.available_balance: Optional[float] = None

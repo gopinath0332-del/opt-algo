@@ -64,6 +64,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--alloc-pct", type=float, default=None, help="Capital allocation percentage (overrides settings.yaml)")
     p.add_argument("--verbose",  action="store_true")
     p.add_argument("--skip-weekends", action="store_true", help="Skip trades on Saturday and Sunday")
+    p.add_argument("--no-momentum-filter", action="store_true", help="Disable pre-entry momentum filter")
+    p.add_argument("--no-big-leg-skip",    action="store_true", help="Disable big-leg asymmetry skip filter")
+    p.add_argument("--min-premium",        type=float, default=None, help="Minimum entry premium threshold ($)")
     return p.parse_args()
 
 
@@ -84,15 +87,23 @@ def main() -> None:
     from backtest.config import LIVE_CAPITAL_ALLOC_PCT
     alloc_pct = args.alloc_pct if args.alloc_pct is not None else LIVE_CAPITAL_ALLOC_PCT
 
-    cfg = BacktestConfig(
-        start_month     = start,
-        end_month       = end,
-        lot_size        = args.lot_size,
-        sl_pct          = args.sl_pct,
-        initial_capital = args.capital,
-        capital_allocation_pct = alloc_pct,
-        verbose         = args.verbose,
-    )
+    cfg_kwargs = {
+        "start_month": start,
+        "end_month": end,
+        "lot_size": args.lot_size,
+        "sl_pct": args.sl_pct,
+        "initial_capital": args.capital,
+        "capital_allocation_pct": alloc_pct,
+        "verbose": args.verbose,
+    }
+    if args.no_momentum_filter:
+        cfg_kwargs["momentum_filter_enabled"] = False
+    if args.no_big_leg_skip:
+        cfg_kwargs["big_leg_skip_ratio"] = 0.0
+    if args.min_premium is not None:
+        cfg_kwargs["min_entry_premium"] = args.min_premium
+
+    cfg = BacktestConfig(**cfg_kwargs)
 
     log.info("=" * 60)
     log.info("  BTC Short Straddle Backtest")
@@ -103,6 +114,14 @@ def main() -> None:
              if cfg.use_dynamic_lot_size else f"{cfg.lot_size} contracts/leg (static)")
     log.info("  SL        : %.0f%% of entry premium", cfg.sl_pct)
     log.info("  Entry/Exit: %s / %s UTC", cfg.entry_time_utc, cfg.exit_time_utc)
+    log.info(
+        "  Filters   : Momentum=%s (%.1fh, %.1f%%), BigLegSkip=%s, MinPremium=%s",
+        "ON" if cfg.momentum_filter_enabled else "OFF",
+        cfg.momentum_lookback_hours,
+        cfg.momentum_threshold_pct,
+        f"{cfg.big_leg_skip_ratio:.0f}x" if cfg.big_leg_skip_ratio > 0 else "OFF",
+        f"${cfg.min_entry_premium:.0f}" if cfg.min_entry_premium > 0 else "OFF",
+    )
     log.info("=" * 60)
 
     engine    = ShortStraddleEngine(cfg)
@@ -120,6 +139,18 @@ def main() -> None:
         "Done: %d calendar days | %d trades | %d skipped",
         day_count, len(engine.trades), len(engine.skipped),
     )
+    if engine.skipped:
+        from collections import Counter
+        def _clean_reason(r: str) -> str:
+            if r.startswith("low premium"):
+                return "low entry premium"
+            if r.startswith("big-leg ratio"):
+                return "big-leg asymmetry ratio"
+            return r.split(" (")[0]
+
+        skip_counts = Counter(_clean_reason(s.reason) for s in engine.skipped)
+        for reason, count in skip_counts.most_common():
+            log.info("  Skipped: %3d days -> %s", count, reason)
 
     if not engine.trades:
         log.error("No trades generated -- check data path and date range")
