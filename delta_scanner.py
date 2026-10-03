@@ -229,7 +229,7 @@ def find_target_options(
     products: List[Dict[str, Any]],
     all_tickers: Dict[str, Dict[str, Any]],
     target_delta: float = 0.36,
-    expiry_filter: str = "same",
+    expiry_filter: str = "daily",
 ) -> Tuple[Optional[Dict], Optional[Dict], Optional[Dict], Optional[Dict]]:
     """
     Independently find:
@@ -237,9 +237,9 @@ def find_target_options(
       - The BTC PUT  whose delta is closest to -target_delta  (puts have negative delta)
 
     expiry_filter:
-      - 'same'  : (default) guarantees Call and Put share the same expiry date,
-                  choosing the expiry whose combined delta difference is smallest.
-      - 'daily' or 'next': filters to the next upcoming active expiry (>1h away).
+      - 'daily' or 'nearest': (default) selects the nearest active daily expiry
+                              (at 16:30 IST, this is today's 17:30 IST expiring contract).
+      - 'same'  : evaluates all expiries across the year and picks the one with best combined delta.
       - 'any'   : completely unconstrained (legs can have different expiries).
       - <str>   : substring filter on settlement_time or symbol (e.g. '041026').
 
@@ -260,15 +260,15 @@ def find_target_options(
 
     # Pre-filter by expiry mode if requested
     exp_lower = expiry_filter.lower().strip()
-    if exp_lower in ("daily", "next"):
-        # Select the next upcoming expiry that has at least 1 hour remaining
-        all_exp_ts = sorted(set(_get_exp_ts(p) for p in products if _get_exp_ts(p) > now_ts + 3600))
+    if exp_lower in ("daily", "next", "nearest"):
+        # Select the nearest active expiry that has not yet expired (allows 5m buffer)
+        all_exp_ts = sorted(set(_get_exp_ts(p) for p in products if _get_exp_ts(p) >= now_ts - 300))
         if all_exp_ts:
             target_ts = all_exp_ts[0]
             products = [p for p in products if abs(_get_exp_ts(p) - target_ts) < 60]
-            print(f"  [Filter] Selected next expiry: {_expiry_label(products[0])}")
+            print(f"  [Filter] Selected active daily expiry: {_expiry_label(products[0])}")
         else:
-            print("  [WARN] No upcoming expiry > 1h away found; using all products.")
+            print("  [WARN] No active expiry found; scanning all products.")
     elif exp_lower not in ("same", "any", "all"):
         # Specific date substring (e.g. '041026', '2026-10-04')
         filtered = [p for p in products if exp_lower in _get_exp_str(p).lower() or exp_lower in p.get("symbol", "").lower()]
@@ -507,7 +507,7 @@ def seconds_until(hour: int, minute: int) -> float:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def run_scan(target_delta: float, expiry_filter: str = "same") -> None:
+def run_scan(target_delta: float, expiry_filter: str = "daily") -> None:
     sep = "=" * 62
     print(f"\n{sep}")
     print(f"  BTC DELTA SCANNER  |  target delta ~ {target_delta:.2f}  |  expiry: {expiry_filter}")
@@ -602,9 +602,9 @@ def main() -> None:
         help=f"Target delta, default={TARGET_DELTA}",
     )
     parser.add_argument(
-        "--expiry", type=str, default="same",
+        "--expiry", type=str, default="daily",
         metavar="EXPIRY",
-        help="Expiry filter: 'same' (default, same expiry best match), 'daily'/'next' (next daily contract), 'any' (unconstrained), or date substring like '041026'",
+        help="Expiry filter: 'daily' (default, active daily contract), 'same' (best delta across all expiries), 'any', or date substring like '041026'",
     )
     args = parser.parse_args()
 
