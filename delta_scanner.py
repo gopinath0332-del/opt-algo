@@ -58,10 +58,59 @@ WEBHOOK_URL    = os.getenv("DISCORD_WEBHOOK_URL", "")
 # ---------------------------------------------------------------------------
 
 def _fmt(val: Optional[float], decimals: int = 4) -> str:
-    """Format float nicely, removing trailing zeros."""
+    """Format float nicely, removing trailing zeros only from decimal portion."""
     if val is None:
         return "—"
-    return f"{val:,.{decimals}f}".rstrip("0").rstrip(".")
+    if decimals == 0:
+        return f"{int(round(val)):,}"
+    s = f"{val:,.{decimals}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def send_discord_startup_message(
+    target_delta: float,
+    expiry_filter: str,
+    fire_time: Tuple[int, int],
+    spot_price: Optional[float] = None,
+) -> None:
+    """Send a startup alert to Discord when the scanner service initializes."""
+    h, m = fire_time
+    now_ist = datetime.datetime.now(IST).strftime("%H:%M:%S IST · %d %b %Y")
+    spot_str = f"${_fmt(spot_price, 2)}" if spot_price else "—"
+
+    ansi = (
+        f"\u001b[1;34m📡 BTC Options — Delta Scanner Service\u001b[0m\n"
+        f"Status       : \u001b[1;32mONLINE\u001b[0m\n"
+        f"Schedule     : \u001b[1;36mDaily at {h:02d}:{m:02d} IST\u001b[0m\n"
+        f"Target Delta : \u001b[1;36m±{target_delta:.2f}\u001b[0m  (independent legs)\n"
+        f"Expiry Mode  : \u001b[0;37m{expiry_filter}\u001b[0m\n"
+        f"BTC Spot     : \u001b[0;36m{spot_str}\u001b[0m\n\n"
+        f"\u001b[0;37mService initialized and waiting for scheduled execution.\u001b[0m\n"
+        f"\u001b[0;37mStarted at   : {now_ist}\u001b[0m"
+    )
+
+    payload = {
+        "embeds": [{
+            "title": f"🚀 BTC Delta Scanner Online | Schedule {h:02d}:{m:02d} IST",
+            "description": f"```ansi\n{ansi}\n```",
+            "color": 3447003,  # Blue
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "footer": {"text": "Delta Scanner · Service Online · opt-algo"},
+        }]
+    }
+
+    if not WEBHOOK_URL:
+        print("  ⚠️  DISCORD_WEBHOOK_URL not set — skipping Discord startup send.")
+        return
+
+    try:
+        r = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        r.raise_for_status()
+        print(f"  ✅ Discord startup notification sent (HTTP {r.status_code})")
+    except requests.RequestException as e:
+        print(f"  ⚠️ Discord startup notification failed: {e}")
 
 
 def _get(endpoint: str, params: Optional[Dict] = None) -> Any:
@@ -507,6 +556,38 @@ def run_scan(target_delta: float, expiry_filter: str = "same") -> None:
     print(f"\n{sep}\n  Done.\n{sep}\n")
 
 
+def check_single_instance() -> None:
+    """Ensure only one scanner instance runs concurrently on this machine."""
+    import tempfile
+    lock_file = Path(tempfile.gettempdir()) / "delta_scanner.pid"
+    if lock_file.exists():
+        try:
+            pid = int(lock_file.read_text().strip())
+            if pid != os.getpid():
+                if sys.platform == "win32":
+                    import ctypes
+                    SYNCHRONIZE = 0x00100000
+                    h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+                    if h != 0:
+                        ctypes.windll.kernel32.CloseHandle(h)
+                        print(f"\n  ⚠️  Another delta_scanner instance is already running on this machine (PID {pid}).")
+                        print("     Exiting to prevent duplicate Discord messages.\n")
+                        sys.exit(0)
+                else:
+                    os.kill(pid, 0)
+                    print(f"\n  ⚠️  Another delta_scanner instance is already running on this machine (PID {pid}).")
+                    print("     Exiting to prevent duplicate Discord messages.\n")
+                    sys.exit(0)
+        except (ValueError, OSError):
+            pass
+    try:
+        lock_file.write_text(str(os.getpid()))
+        import atexit
+        atexit.register(lambda: lock_file.unlink(missing_ok=True))
+    except Exception:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="BTC Options Delta Scanner — sends Discord alert (no orders placed)"
@@ -531,12 +612,19 @@ def main() -> None:
         run_scan(args.delta, args.expiry)
         return
 
+    # Ensure single instance on this machine
+    check_single_instance()
+
     # ── Scheduled daily mode ──────────────────────────────────────────────────
     h, m = FIRE_TIME_IST
     print(f"\n⏰  Scheduled BTC Delta Scanner active (Daily at {h:02d}:{m:02d} IST)")
     print(f"    Target Δ : {args.delta:.2f}")
     print(f"    Expiry   : {args.expiry}")
     print("    Press Ctrl+C to cancel.\n")
+
+    # Send startup message to Discord
+    spot = get_btc_spot()
+    send_discord_startup_message(args.delta, args.expiry, FIRE_TIME_IST, spot)
 
     while True:
         wait = seconds_until(h, m)
