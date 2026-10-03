@@ -1,0 +1,17 @@
+[Unit]
+Description=BTC Delta Options Scanner Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/opt-algo
+ExecStart=/home/pi/opt-algo/venv/bin/python delta_scanner.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

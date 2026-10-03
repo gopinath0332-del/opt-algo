@@ -96,3 +96,15 @@ dmypy.json
 config/*firebase-adminsdk*.json
 config/firestore-service-account.json
 **/firestore-service-account.json
+# Squad: ignore runtime state (logs, inbox, sessions)
+# Note: .squad/casting/* is identity and MUST be committed to main, not ignored
+.squad/orchestration-log/
+.squad/
+.squad/decisions/inbox/
+.squad/sessions/
+.squad/.scratch/
+.squad/.cache/
+# Squad: SubSquad activation file (local to this machine)
+.squad-workstream
+.github/
+.copilot/

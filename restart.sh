@@ -5,6 +5,7 @@
 
 OPTIONS_SERVICE="options-bot"
 GOLD_SERVICE="gold_orb"
+SCANNER_SERVICE="delta-scanner"
 GOLD_ORB_ENABLED=false   # Set to true to re-enable Gold ORB
 
 echo "=========================================================="
@@ -19,7 +20,13 @@ else
     echo "WARNING: $OPTIONS_SERVICE service not found, skipping."
 fi
 
-# 2. Gold ORB service (currently disabled)
+# 2. Restart delta-scanner systemd service
+if systemctl list-unit-files | grep -q "^$SCANNER_SERVICE.service"; then
+    echo "Restarting $SCANNER_SERVICE..."
+    sudo systemctl restart $SCANNER_SERVICE
+fi
+
+# 3. Gold ORB service (currently disabled)
 if [ "$GOLD_ORB_ENABLED" = true ]; then
     if systemctl list-unit-files | grep -q "^$GOLD_SERVICE.service"; then
         echo "Restarting $GOLD_SERVICE..."

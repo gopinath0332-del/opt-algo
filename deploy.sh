@@ -37,7 +37,7 @@ fi
 # 4. Copy project files if not already in target directory
 if [ "$(pwd)" != "$PROJECT_DIR" ]; then
     echo "Step 4: Copying application files..."
-    cp -R api core strategy notifications config main.py run_gold_orb.py requirements.txt "$PROJECT_DIR/"
+    cp -R api core strategy notifications config main.py delta_scanner.py run_gold_orb.py requirements.txt "$PROJECT_DIR/"
 else
     echo "Step 4: Already in target directory, skipping copy."
 fi
@@ -60,6 +60,11 @@ sudo cp "$PROJECT_DIR/config/options-bot.service" "/etc/systemd/system/options-b
 if [ -f "$PROJECT_DIR/config/gold_orb.service" ]; then
     sudo cp "$PROJECT_DIR/config/gold_orb.service" "/etc/systemd/system/gold_orb.service"
     echo "Gold ORB service file installed (not enabled — GOLD_ORB_ENABLED=$GOLD_ORB_ENABLED)."
+fi
+
+if [ -f "$PROJECT_DIR/config/delta-scanner.service" ]; then
+    sudo cp "$PROJECT_DIR/config/delta-scanner.service" "/etc/systemd/system/delta-scanner.service"
+    echo "Delta Scanner service file installed."
 fi
 
 sudo systemctl daemon-reload
