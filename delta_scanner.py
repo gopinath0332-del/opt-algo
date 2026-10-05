@@ -301,6 +301,41 @@ def get_mark_price_from_ticker(ticker: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+def get_greek(ticker: Dict[str, Any], name: str) -> Optional[float]:
+    """Extract any greek or IV from ticker, checking top-level then nested 'greeks' dict.
+
+    Delta Exchange may expose greeks at the top level (e.g. ticker['gamma'])
+    or inside a nested dict (ticker['greeks']['gamma']). Handles both.
+    Also handles 'iv' / 'implied_volatility' for IV.
+    """
+    # Normalised aliases so callers can pass friendly names
+    aliases: Dict[str, List[str]] = {
+        "iv":    ["iv", "implied_volatility", "mark_iv"],
+        "gamma": ["gamma"],
+        "theta": ["theta"],
+        "vega":  ["vega"],
+        "rho":   ["rho"],
+    }
+    keys_to_try = aliases.get(name.lower(), [name.lower()])
+    for k in keys_to_try:
+        val = ticker.get(k)
+        if val is not None:
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                pass
+    greeks = ticker.get("greeks") or {}
+    if isinstance(greeks, dict):
+        for k in keys_to_try:
+            val = greeks.get(k)
+            if val is not None:
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    pass
+    return None
+
+
 def find_target_options(
     products: List[Dict[str, Any]],
     all_tickers: Dict[str, Dict[str, Any]],
@@ -487,6 +522,16 @@ def send_discord_alert(
     if spot_price:
         ansi += f"\u001b[0;37mBTC Spot     : \u001b[0;36m${_fmt(spot_price, 2)}\u001b[0m\n"
 
+    call_gamma   = get_greek(call_ticker, "gamma")
+    call_theta   = get_greek(call_ticker, "theta")
+    call_vega    = get_greek(call_ticker, "vega")
+    call_iv      = get_greek(call_ticker, "iv")
+
+    put_gamma    = get_greek(put_ticker,  "gamma") if put_ticker else None
+    put_theta    = get_greek(put_ticker,  "theta") if put_ticker else None
+    put_vega     = get_greek(put_ticker,  "vega")  if put_ticker else None
+    put_iv       = get_greek(put_ticker,  "iv")    if put_ticker else None
+
     # ── Moneyness + strike offset ─────────────────────────────────────────────
     # Build the full strike ladder from products (call + put strikes combined)
     all_strikes: List[float] = []
@@ -513,7 +558,11 @@ def send_discord_alert(
         f"Symbol   : \u001b[1;37m{call_symbol}\u001b[0m\n"
         f"Strike   : \u001b[0;36m${_fmt(call_strike, 0)}\u001b[0m  [{call_money_ansi}]\n"
         f"Expiry   : \u001b[0;37m{call_expiry}\u001b[0m\n"
-        f"Delta    : \u001b[1;32m{call_delta:+.4f}\u001b[0m\n"
+        f"Delta  Δ : \u001b[1;32m{call_delta:+.4f}\u001b[0m\n"
+        f"Gamma  Γ : \u001b[0;37m{_fmt(call_gamma, 6)}\u001b[0m\n"
+        f"Theta  Θ : \u001b[0;35m{_fmt(call_theta, 4)} pts/day\u001b[0m\n"
+        f"Vega   V : \u001b[0;34m{_fmt(call_vega, 4)} pts/1%IV\u001b[0m\n"
+        f"IV       : \u001b[0;36m{(_fmt(call_iv * 100, 2) + '%') if call_iv is not None else '—'}\u001b[0m\n"
         f"Premium  : \u001b[0;33m{_fmt(call_premium, 4)} pts\u001b[0m\n"
         f"\n"
         f"\u001b[1;31m── PUT ──────────────────────────────────────\u001b[0m\n"
@@ -523,12 +572,18 @@ def send_discord_alert(
     )
     if put_delta is not None:
         ansi += (
-            f"Delta    : \u001b[1;31m{put_delta:+.4f}\u001b[0m"
+            f"Delta  Δ : \u001b[1;31m{put_delta:+.4f}\u001b[0m"
             f"  \u001b[0;37m(|Δ|={abs(put_delta):.4f})\u001b[0m\n"
         )
     else:
-        ansi += "Delta    : \u001b[0;37m— (unavailable)\u001b[0m\n"
-    ansi += f"Premium  : \u001b[0;33m{_fmt(put_premium, 4)} pts\u001b[0m\n"
+        ansi += "Delta  Δ : \u001b[0;37m— (unavailable)\u001b[0m\n"
+    ansi += (
+        f"Gamma  Γ : \u001b[0;37m{_fmt(put_gamma, 6)}\u001b[0m\n"
+        f"Theta  Θ : \u001b[0;35m{_fmt(put_theta, 4)} pts/day\u001b[0m\n"
+        f"Vega   V : \u001b[0;34m{_fmt(put_vega, 4)} pts/1%IV\u001b[0m\n"
+        f"IV       : \u001b[0;36m{(_fmt(put_iv * 100, 2) + '%') if put_iv is not None else '—'}\u001b[0m\n"
+        f"Premium  : \u001b[0;33m{_fmt(put_premium, 4)} pts\u001b[0m\n"
+    )
 
     ansi += f"\n\u001b[0;37m⏱ Scanned: {now_ist}\u001b[0m"
 
