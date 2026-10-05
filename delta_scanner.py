@@ -90,6 +90,61 @@ def moneyness_label(strike: float, spot: Optional[float], option_type: str) -> s
     return "—"
 
 
+def strike_offset_str(
+    strike: float,
+    spot: Optional[float],
+    all_strikes: List[float],
+    option_type: str,
+) -> str:
+    """Return standard options offset notation: ATM, ITM-2, OTM+3, etc.
+
+    Logic:
+      - Sort the unique strike ladder and find the step size (minimum gap).
+      - Locate the ATM strike (closest to spot).
+      - Count how many steps the given strike is from ATM.
+      - CALL: below ATM => ITM (negative), above ATM => OTM (positive).
+      - PUT : above ATM => ITM (positive),  below ATM => OTM (negative).
+      - Returns '—' when spot or strikes are unavailable.
+    """
+    if spot is None or spot == 0 or not all_strikes:
+        return "—"
+
+    sorted_strikes = sorted(set(all_strikes))
+    if len(sorted_strikes) < 2:
+        return "ATM"
+
+    # Infer step size as the minimum gap between adjacent strikes
+    gaps = [sorted_strikes[i+1] - sorted_strikes[i] for i in range(len(sorted_strikes)-1)]
+    step = min(gaps)
+    if step <= 0:
+        return "—"
+
+    # ATM = strike closest to spot
+    atm_strike = min(sorted_strikes, key=lambda s: abs(s - spot))
+
+    # How many steps from ATM?  (positive => above ATM)
+    raw_offset = (strike - atm_strike) / step
+    offset = int(round(raw_offset))
+
+    if offset == 0:
+        return "ATM"
+
+    otype = option_type.lower()
+    if otype in ("call", "call_options"):
+        # CALL: above ATM = OTM, below ATM = ITM
+        if offset > 0:
+            return f"OTM+{offset}"
+        else:
+            return f"ITM{offset}"          # offset is negative, gives e.g. ITM-2
+    elif otype in ("put", "put_options"):
+        # PUT: above ATM = ITM, below ATM = OTM
+        if offset > 0:
+            return f"ITM+{offset}"
+        else:
+            return f"OTM{offset}"          # offset is negative, gives e.g. OTM-3
+    return f"{offset:+d}"
+
+
 def send_discord_startup_message(
     target_delta: float,
     expiry_filter: str,
@@ -408,6 +463,7 @@ def send_discord_alert(
     put_ticker: Optional[Dict[str, Any]],
     target_delta: float,
     spot_price: Optional[float] = None,
+    products: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Build and post a rich Discord embed with CALL + PUT details."""
 
@@ -431,14 +487,25 @@ def send_discord_alert(
     if spot_price:
         ansi += f"\u001b[0;37mBTC Spot     : \u001b[0;36m${_fmt(spot_price, 2)}\u001b[0m\n"
 
-    # ── Moneyness classification ─────────────────────────────────────────────
-    call_money = moneyness_label(call_strike, spot_price, "call")
-    put_money  = moneyness_label(put_strike,  spot_price, "put")
+    # ── Moneyness + strike offset ─────────────────────────────────────────────
+    # Build the full strike ladder from products (call + put strikes combined)
+    all_strikes: List[float] = []
+    if products:
+        for p in products:
+            try:
+                all_strikes.append(float(p.get("strike_price", 0) or 0))
+            except (ValueError, TypeError):
+                pass
+
+    call_money  = moneyness_label(call_strike, spot_price, "call")
+    put_money   = moneyness_label(put_strike,  spot_price, "put")
+    call_offset = strike_offset_str(call_strike, spot_price, all_strikes, "call")
+    put_offset  = strike_offset_str(put_strike,  spot_price, all_strikes, "put")
 
     # Colour codes: ATM=yellow, ITM=green, OTM=red (ANSI)
     _money_color = {"ATM": "\u001b[1;33m", "ITM": "\u001b[1;32m", "OTM": "\u001b[1;31m"}
-    call_money_ansi = f"{_money_color.get(call_money, chr(27) + '[0;37m')}{call_money}\u001b[0m"
-    put_money_ansi  = f"{_money_color.get(put_money,  chr(27) + '[0;37m')}{put_money}\u001b[0m"
+    call_money_ansi = f"{_money_color.get(call_money, chr(27) + '[0;37m')}{call_offset}\u001b[0m"
+    put_money_ansi  = f"{_money_color.get(put_money,  chr(27) + '[0;37m')}{put_offset}\u001b[0m"
 
     ansi += (
         f"\n"
@@ -581,7 +648,7 @@ def run_scan(target_delta: float, expiry_filter: str = "daily") -> None:
 
     # ── Step 4: send Discord ────────────────────────────────────────────────
     print()
-    send_discord_alert(call_prod, call_tick, put_prod, put_tick, target_delta, spot)
+    send_discord_alert(call_prod, call_tick, put_prod, put_tick, target_delta, spot, products)
 
     print(f"\n{sep}\n  Done.\n{sep}\n")
 
