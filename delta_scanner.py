@@ -69,6 +69,27 @@ def _fmt(val: Optional[float], decimals: int = 4) -> str:
     return s
 
 
+def moneyness_label(strike: float, spot: Optional[float], option_type: str) -> str:
+    """Return ATM / ITM / OTM classification for a given strike vs spot.
+
+    ATM threshold: within 0.5 % of spot.
+    CALL: ITM when strike < spot, OTM when strike > spot.
+    PUT : ITM when strike > spot, OTM when strike < spot.
+    Returns '—' when spot is unavailable.
+    """
+    if spot is None or spot == 0:
+        return "—"
+    pct_diff = (strike - spot) / spot  # positive => strike above spot
+    if abs(pct_diff) <= 0.005:         # within ±0.5 %
+        return "ATM"
+    otype = option_type.lower()
+    if otype in ("call", "call_options"):
+        return "ITM" if pct_diff < 0 else "OTM"   # strike below spot → ITM
+    elif otype in ("put", "put_options"):
+        return "ITM" if pct_diff > 0 else "OTM"   # strike above spot → ITM
+    return "—"
+
+
 def send_discord_startup_message(
     target_delta: float,
     expiry_filter: str,
@@ -410,18 +431,27 @@ def send_discord_alert(
     if spot_price:
         ansi += f"\u001b[0;37mBTC Spot     : \u001b[0;36m${_fmt(spot_price, 2)}\u001b[0m\n"
 
+    # ── Moneyness classification ─────────────────────────────────────────────
+    call_money = moneyness_label(call_strike, spot_price, "call")
+    put_money  = moneyness_label(put_strike,  spot_price, "put")
+
+    # Colour codes: ATM=yellow, ITM=green, OTM=red (ANSI)
+    _money_color = {"ATM": "\u001b[1;33m", "ITM": "\u001b[1;32m", "OTM": "\u001b[1;31m"}
+    call_money_ansi = f"{_money_color.get(call_money, chr(27) + '[0;37m')}{call_money}\u001b[0m"
+    put_money_ansi  = f"{_money_color.get(put_money,  chr(27) + '[0;37m')}{put_money}\u001b[0m"
+
     ansi += (
         f"\n"
         f"\u001b[1;32m── CALL ─────────────────────────────────────\u001b[0m\n"
         f"Symbol   : \u001b[1;37m{call_symbol}\u001b[0m\n"
-        f"Strike   : \u001b[0;36m${_fmt(call_strike, 0)}\u001b[0m\n"
+        f"Strike   : \u001b[0;36m${_fmt(call_strike, 0)}\u001b[0m  [{call_money_ansi}]\n"
         f"Expiry   : \u001b[0;37m{call_expiry}\u001b[0m\n"
         f"Delta    : \u001b[1;32m{call_delta:+.4f}\u001b[0m\n"
         f"Premium  : \u001b[0;33m{_fmt(call_premium, 4)} pts\u001b[0m\n"
         f"\n"
         f"\u001b[1;31m── PUT ──────────────────────────────────────\u001b[0m\n"
         f"Symbol   : \u001b[1;37m{put_symbol}\u001b[0m\n"
-        f"Strike   : \u001b[0;36m${_fmt(put_strike, 0)}\u001b[0m\n"
+        f"Strike   : \u001b[0;36m${_fmt(put_strike, 0)}\u001b[0m  [{put_money_ansi}]\n"
         f"Expiry   : \u001b[0;37m{put_expiry}\u001b[0m\n"
     )
     if put_delta is not None:
